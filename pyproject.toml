@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voxshield"
+version = "0.1.0"
+description = "Privacy-aware voice-cloning impersonation detection and step-up verification recommendations."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "VoxShield" }]
+
+# Runtime dependencies are deliberately minimal. librosa and torchaudio are
+# intentionally absent: resampling and mel filtering are implemented directly in
+# voxshield.audio so there is exactly one feature extractor, and a model trained
+# on a different representation than the one served is a silent production
+# failure. See docs/architecture.md and voxshield/audio/features.py.
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+# Model + evaluation. torch is required only once a model is actually trained;
+# it is NOT needed to run the API or the preprocessing tests.
+ml = [
+    "torch>=2.4",
+]
+api = [
+    "fastapi>=0.115",
+    "pydantic>=2.9",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.9",
+]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+all = [
+    "voxshield[ml,api,dev]",
+]
+
+[project.scripts]
+voxshield = "voxshield.cli:main"
+# Training and evaluation entry points are deliberately absent. They would point
+# at modules that do not exist yet -- a model has not been trained -- and an
+# installed console script that raises ModuleNotFoundError on first run is a
+# broken promise shipped to whoever installs the package. They are added with the
+# Phase 1 model work, not before. tests/unit/test_cli.py asserts that every
+# script declared here resolves, so the two cannot drift apart again.
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+voxshield = ["py.typed"]
+
+# ---------------------------------------------------------------------------
+# Tooling
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "security: adversarial-input and abuse tests",
+    "slow: tests that take more than a few seconds",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "S",    # flake8-bandit  <-- security rules are mandatory here
+    "C4",   # comprehensions
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Asserts are the assertion mechanism in tests. They are not accepted in
+# library code, where a stripped or optimised build would silently remove the
+# check, so S101 is ignored per-path rather than globally.
+"tests/**" = ["S", "E501"]
+# The smoke script asserts and prints a readable body by design; it is a
+# diagnostic, not library code, and is run directly rather than imported.
+"appsmoke.py" = ["S", "E402", "E401", "E702", "E701", "E501"]
+# B008 flags a call in an argument default. FastAPI's dependency mechanism is
+# built on exactly that pattern: File(...), Form(...) and Depends(...) are how a
+# route declares its inputs, and they are not evaluated per request.
+"src/voxshield/api/routes.py" = ["B008"]
+
+[tool.mypy]
+# 3.12 is the real floor, not a preference: numpy>=2.3 -- the version the
+# numpy>=2.0 floor above resolves to -- requires 3.12, and its stubs use PEP 695
+# `type` statements that mypy cannot parse below that. The previous 3.11 target
+# made the type gate unrunnable while the dependency floor quietly disagreed
+# with it.
+python_version = "3.12"
+files = ["src/voxshield"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

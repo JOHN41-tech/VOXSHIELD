@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------
+# VoxShield .gitignore
+#
+# The single most important rule in this repository: source audio, processed
+# audio, dataset archives, model weights, and any credential never enter git.
+# See docs/privacy-design.md and docs/data-governance.md.
+# ---------------------------------------------------------------------------
+
+# --- Data: never commit audio ------------------------------------------------
+data/raw/**
+data/processed/**
+data/synthetic/**
+!data/**/.gitkeep
+!data/README.md
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.opus
+*.aac
+*.pcm
+
+# Dataset archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+
+# --- Model artifacts ---------------------------------------------------------
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.onnx.data
+*.h5
+*.pkl
+*.joblib
+*.safetensors
+mlruns/
+wandb/
+checkpoints/
+
+# --- Secrets -----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# --- Editors / OS ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Local scratch -----------------------------------------------------------
+*.log
+tmp/
+scratch/
+*.tmp
