@@ -70,6 +70,7 @@ def _is_forbidden_key(key: str) -> bool:
     """
     return bool(_FORBIDDEN_LOG_KEY.search(key)) and not _METRIC_KEY_SUFFIX.search(key)
 
+
 # Sequences longer than this are treated as payloads rather than diagnostics.
 _MAX_LOG_SEQUENCE = 32
 
@@ -176,9 +177,10 @@ _LOGRECORD_PASSTHROUGH = frozenset({"exc_info", "stack_info", "stacklevel"})
 
 # ``logging`` raises if an ``extra`` key would overwrite an existing record
 # attribute, so a caller-supplied field name must never reach it unchecked.
-_RESERVED_RECORD_KEYS = frozenset(
-    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
-) | {"message", "asctime"}
+_RESERVED_RECORD_KEYS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "message",
+    "asctime",
+}
 
 
 class _ScreenedLogger:
@@ -220,7 +222,8 @@ class _ScreenedLogger:
             message = "[non-printable message redacted]"
 
         screened = {
-            key: item for key, item in scrub_mapping(fields).items()
+            key: item
+            for key, item in scrub_mapping(fields).items()
             if key not in _RESERVED_RECORD_KEYS
         }
         return message, screened, passthrough
@@ -282,9 +285,7 @@ class _JsonFormatter(logging.Formatter):
         try:
             return json.dumps(payload, separators=(",", ":"), default=str)
         except (TypeError, ValueError):
-            return json.dumps(
-                {"level": record.levelname, "message": "[unserialisable log record]"}
-            )
+            return json.dumps({"level": record.levelname, "message": "[unserialisable log record]"})
 
 
 def configure_logging(level: int = logging.INFO, *, json_output: bool = True) -> None:

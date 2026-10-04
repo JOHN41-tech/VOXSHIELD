@@ -207,22 +207,26 @@ def normalize_loudness(
     if settings.strategy == "peak":
         if peak_before <= settings.silence_rms:
             return arr.copy(), 0.0, peak_before, False
-        gain_db = float(np.clip(
-            20.0 * np.log10(settings.target_peak / peak_before),
-            -settings.max_gain_db,
-            settings.max_gain_db,
-        ))
+        gain_db = float(
+            np.clip(
+                20.0 * np.log10(settings.target_peak / peak_before),
+                -settings.max_gain_db,
+                settings.max_gain_db,
+            )
+        )
     else:
         current_rms = rms(arr)
         # Below the silence floor there is no speech to normalise; treat the
         # signal as digital silence and leave it alone.
         if current_rms <= settings.silence_rms:
             return arr.copy(), 0.0, peak_before, False
-        gain_db = float(np.clip(
-            settings.target_rms_dbfs - float(20.0 * np.log10(current_rms)),
-            -settings.max_gain_db,
-            settings.max_gain_db,
-        ))
+        gain_db = float(
+            np.clip(
+                settings.target_rms_dbfs - float(20.0 * np.log10(current_rms)),
+                -settings.max_gain_db,
+                settings.max_gain_db,
+            )
+        )
 
     out = arr * np.float32(10.0 ** (gain_db / 20.0))
 

@@ -43,10 +43,7 @@ class SegmentScore:
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.synthetic_probability <= 1.0:
-            msg = (
-                "synthetic_probability must be in [0, 1], got "
-                f"{self.synthetic_probability}"
-            )
+            msg = f"synthetic_probability must be in [0, 1], got {self.synthetic_probability}"
             raise ModelContractError(msg)
 
 

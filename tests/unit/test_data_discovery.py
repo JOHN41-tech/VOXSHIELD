@@ -147,7 +147,9 @@ class TestDuplicateDetection:
         # would compare the dropped set to itself and pass whatever discovery did,
         # including deleting a genuine sample. Which copy survives is the
         # tiebreak's business, asserted separately.
-        assert result.dropped_ids() == frozenset({"librispeech:a", "wavefake:a"}) - result.kept_ids()
+        assert (
+            result.dropped_ids() == frozenset({"librispeech:a", "wavefake:a"}) - result.kept_ids()
+        )
 
     def test_scope_is_cross_dataset(self, tmp_path: Path) -> None:
         """A per-dataset dedup would miss precisely the interesting leak."""
@@ -199,9 +201,7 @@ class TestDuplicateDetection:
     def test_different_bytes_are_not_duplicates(self, tmp_path: Path) -> None:
         write(tmp_path, "a.wav", b"aaaa")
         write(tmp_path, "b.wav", b"aaab")
-        result = discover(
-            [record("s1", "ds", "a.wav"), record("s2", "ds", "b.wav")], tmp_path
-        )
+        result = discover([record("s1", "ds", "a.wav"), record("s2", "ds", "b.wav")], tmp_path)
         assert result.duplicates == ()
         assert len(result.kept_ids()) == 2
 
@@ -209,9 +209,7 @@ class TestDuplicateDetection:
         """Size prefiltering must not promote equal-length files to duplicates."""
         write(tmp_path, "a.wav", b"aaaa")
         write(tmp_path, "b.wav", b"bbbb")
-        result = discover(
-            [record("s1", "ds", "a.wav"), record("s2", "ds", "b.wav")], tmp_path
-        )
+        result = discover([record("s1", "ds", "a.wav"), record("s2", "ds", "b.wav")], tmp_path)
         assert result.stats.duplicate_groups == 0
 
     def test_three_copies_collapse_to_one(self, tmp_path: Path) -> None:
@@ -255,9 +253,7 @@ class TestDuplicateDetection:
         """A duplicate is removed from the corpus but must stay auditable."""
         write(tmp_path, "a.wav", b"same")
         write(tmp_path, "b.wav", b"same")
-        result = discover(
-            [record("s1", "ds", "a.wav"), record("s2", "ds", "b.wav")], tmp_path
-        )
+        result = discover([record("s1", "ds", "a.wav"), record("s2", "ds", "b.wav")], tmp_path)
         assert len(result.entries) == 1
         assert len(result.all_entries) == 2
 

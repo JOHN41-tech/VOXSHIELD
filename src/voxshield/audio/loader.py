@@ -56,13 +56,7 @@ __all__ = ["AudioSource", "load_audio"]
 #: Every source shape :func:`load_audio` accepts. Encoded audio first, then
 #: already-decoded samples, so the ordering reads as "cheap checks to expensive".
 AudioSource = (
-    bytes
-    | bytearray
-    | memoryview
-    | str
-    | os.PathLike[str]
-    | io.BufferedIOBase
-    | np.ndarray
+    bytes | bytearray | memoryview | str | os.PathLike[str] | io.BufferedIOBase | np.ndarray
 )
 
 _ARRAY_FORMATS = ("RAW",)
@@ -88,18 +82,12 @@ def _load_array(
     rate = int(sample_rate)
 
     if rate > config.max_sample_rate:
-        msg = (
-            f"sample rate {rate} Hz exceeds the limit of "
-            f"{config.max_sample_rate} Hz"
-        )
+        msg = f"sample rate {rate} Hz exceeds the limit of {config.max_sample_rate} Hz"
         raise AudioTooLargeError(msg)
 
     array = np.asarray(samples)
     if array.dtype == object or not np.issubdtype(array.dtype, np.number):
-        msg = (
-            "audio array must have a numeric dtype, got "
-            f"{array.dtype!r}"
-        )
+        msg = f"audio array must have a numeric dtype, got {array.dtype!r}"
         raise AudioIntakeError(msg)
     if np.issubdtype(array.dtype, np.complexfloating):
         msg = f"complex audio is not supported, got {array.dtype!r}"
@@ -110,10 +98,7 @@ def _load_array(
     elif array.ndim == 2:
         data = array
     else:
-        msg = (
-            f"audio array must be 1-D or 2-D, got {array.ndim}-D with shape "
-            f"{array.shape}"
-        )
+        msg = f"audio array must be 1-D or 2-D, got {array.ndim}-D with shape {array.shape}"
         raise AudioIntakeError(msg)
 
     frames = int(data.shape[0])
@@ -126,18 +111,12 @@ def _load_array(
         msg = "audio array declares zero channels"
         raise AudioDecodeError(msg)
     if channels > config.max_channels:
-        msg = (
-            f"audio has {channels} channels, exceeding the limit of "
-            f"{config.max_channels}"
-        )
+        msg = f"audio has {channels} channels, exceeding the limit of {config.max_channels}"
         raise AudioTooLargeError(msg)
 
     duration = frames / float(rate)
     if duration > config.max_duration_seconds:
-        msg = (
-            f"audio is {duration:.1f}s, exceeding the "
-            f"{config.max_duration_seconds:.0f}s limit"
-        )
+        msg = f"audio is {duration:.1f}s, exceeding the {config.max_duration_seconds:.0f}s limit"
         raise AudioTooLargeError(msg)
 
     samples32 = np.ascontiguousarray(data, dtype=np.float32)

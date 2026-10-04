@@ -139,7 +139,13 @@ class SourceRecord:
         attack_type: Detailed attack or vocoder identifier, or :data:`UNKNOWN`.
             Metadata only; never part of the training target.
         attack_family: Coarse grouping derived from ``attack_type``.
-        channel: Channel label, or :data:`UNKNOWN`.
+        channel: Channel label, or :data:`UNKNOWN`. Transmission condition
+            (narrowband / wideband / mobile / studio), not a container format.
+            Drives the channel-disjoint grouping requirement.
+        device: Capture device class, or :data:`UNKNOWN`. Handset or microphone
+            population the recording came from. Distinct from ``channel``: a
+            channel is what the audio survived, a device is what captured it, and
+            a device-disjoint corpus cannot be built from a channel-disjoint one.
         source_split: The split the *source dataset* published, if any. Recorded
             for provenance and cross-checking, never trusted: the split this
             pipeline produces is the one that governs.
@@ -163,6 +169,7 @@ class SourceRecord:
     session_id: str = UNKNOWN
     attack_type: str = UNKNOWN
     channel: str = UNKNOWN
+    device: str = UNKNOWN
     source_split: str = UNKNOWN
     recorded_at: str = UNKNOWN
     duration_seconds: float | None = None
@@ -206,6 +213,7 @@ class SourceRecord:
             "session_id",
             "attack_type",
             "channel",
+            "device",
             "source_split",
             "recorded_at",
         ):
@@ -246,6 +254,11 @@ class SourceRecord:
         speaker-disjointness true by construction rather than by luck; a file with
         no published speaker falls back to its own parent group, which is
         disjoint by definition and honestly *not* speaker-disjoint.
+
+        This is the *base* unit. :mod:`voxshield.data.splitting` widens it to a
+        connected component when channel- or device-disjointness is also required,
+        because a speaker recorded on two channels cannot be split by channel
+        without leaking the speaker.
         """
         if self.speaker_id and self.speaker_id != UNKNOWN:
             return f"speaker:{self.speaker_id}"
@@ -286,6 +299,7 @@ class SourceRecord:
             "attack_type": self.attack_type,
             "attack_family": self.attack_family,
             "channel": self.channel,
+            "device": self.device,
             "source_split": self.source_split,
             "recorded_at": self.recorded_at,
             "duration_seconds": self.duration_seconds,
@@ -320,6 +334,7 @@ class SourceRecord:
             session_id=known_or_unknown(payload.get("session_id")),
             attack_type=known_or_unknown(payload.get("attack_type")),
             channel=known_or_unknown(payload.get("channel")),
+            device=known_or_unknown(payload.get("device")),
             source_split=known_or_unknown(payload.get("source_split")),
             recorded_at=known_or_unknown(payload.get("recorded_at")),
             duration_seconds=(
@@ -361,7 +376,7 @@ class SampleRecord:
         is_padded: Whether the window was zero-filled to full width.
         waveform_samples: Samples in the stored segment.
         speaker_id, generator_id, language, codec, session_id, attack_type,
-            attack_family, channel, recorded_at: Inherited source metadata.
+            attack_family, channel, device, recorded_at: Inherited source metadata.
         file_hash: SHA-256 of the *source* file, so a re-encoded duplicate is
             traceable to the original it came from.
         content_hash: SHA-256 of the stored segment's PCM, so the same audio
@@ -394,6 +409,7 @@ class SampleRecord:
     session_id: str
     attack_type: str
     channel: str
+    device: str
     recorded_at: str
     file_hash: str
     content_hash: str
@@ -425,6 +441,7 @@ class SampleRecord:
             "session_id",
             "attack_type",
             "channel",
+            "device",
             "recorded_at",
             "source_split",
         ):
@@ -434,19 +451,6 @@ class SampleRecord:
     def attack_family(self) -> str:
         """Coarse grouping derived from :attr:`attack_type`. See :class:`SourceRecord`."""
         return classify_attack(self.attack_type)
-
-    @property
-    def manifest_name(self) -> str:
-        """Which ``test_*`` manifest this segment also belongs to, or ``""``.
-
-        A test segment can legitimately appear in several evaluation manifests
-        when it qualifies for more than one axis -- a cross-language test that is
-        also in-domain is not a contradiction. Training and dev segments are
-        never in a test manifest, and this property returns the empty string for
-        them so a caller cannot accidentally add a training row to an evaluation
-        set.
-        """
-        return ""
 
     def with_build(self, dataset_build_id: str) -> SampleRecord:
         """Return a copy stamped with ``dataset_build_id``."""
@@ -482,6 +486,7 @@ class SampleRecord:
             "attack_type": self.attack_type,
             "attack_family": self.attack_family,
             "channel": self.channel,
+            "device": self.device,
             "recorded_at": self.recorded_at,
             "file_hash": self.file_hash,
             "content_hash": self.content_hash,
@@ -523,6 +528,7 @@ class SampleRecord:
             session_id=known_or_unknown(payload.get("session_id")),
             attack_type=known_or_unknown(payload.get("attack_type")),
             channel=known_or_unknown(payload.get("channel")),
+            device=known_or_unknown(payload.get("device")),
             recorded_at=known_or_unknown(payload.get("recorded_at")),
             file_hash=str(payload.get("file_hash") or UNKNOWN),
             content_hash=str(payload.get("content_hash") or UNKNOWN),

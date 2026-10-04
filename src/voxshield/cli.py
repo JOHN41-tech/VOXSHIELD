@@ -3,7 +3,26 @@
 Serves the API and, for operators, exposes the two things you need during an
 incident: whether a model is loaded, and what a specific request decided.
 
-The CLI deliberately has no subcommand that writes audio to disk.
+The CLI deliberately has no subcommand that writes audio to disk. ``voxshield
+data build`` does write standardised segments, and that is not a contradiction:
+it writes the dataset the corpus description already asks for, under
+``data/processed``, from audio the operator placed in ``data/raw``. It is not a
+request-time path and it takes no upload.
+
+Exit codes are part of the contract, because a script reading stdout cannot tell
+"the check passed" from "the check never ran". ``process`` uses ``0``/``1``/``2``/
+``3`` because an abstention and a refusal are different claims. The ``data``
+commands use ``0``/``1``/``2``:
+
+* ``0`` -- ran to completion, and the answer is yes.
+* ``1`` -- ran to completion, and the answer is no: a gate failed, leakage was
+  found, no file survived validation, or a loader produced no batch. Findings are
+  on stdout and under ``data/reports``.
+* ``2`` -- could not run: a bad path, an unreadable configuration, or a manifest
+  this build cannot interpret.
+
+Collapsing ``1`` into ``0`` would let a script report a passing leakage check
+because the check found nothing to compare.
 """
 
 from __future__ import annotations
@@ -15,8 +34,13 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from voxshield.monitoring import configure_logging
+
+if TYPE_CHECKING:
+    from voxshield.data.config import DataConfig
+    from voxshield.data.paths import DataPaths
 
 __all__ = ["main"]
 
@@ -136,6 +160,511 @@ def _process(args: argparse.Namespace) -> int:
     return 0 if result.scorable else 3
 
 
+# ---------------------------------------------------------------------------
+# Dataset commands
+# ---------------------------------------------------------------------------
+
+#: Ran to completion, and the answer is yes.
+DATA_OK = 0
+#: Ran to completion, and the answer is no.
+DATA_FAILED = 1
+#: Could not run at all.
+DATA_CANNOT_RUN = 2
+
+#: Where the dataset configuration lives by default. Absence is not an error: the
+#: built-in defaults plus the environment are a complete configuration, and every
+#: report names which one was used so a reader is never guessing.
+DEFAULT_DATA_CONFIG = Path("configs/data.yaml")
+
+#: The resolved tree, in the order a person reads it.
+_DATA_DIR_FIELDS = (
+    "root",
+    "raw",
+    "interim",
+    "processed",
+    "manifests",
+    "synthetic",
+    "cache",
+    "reports",
+)
+
+
+def _emit(payload: dict[str, Any], *, compact: bool) -> None:
+    """Print one JSON report on stdout.
+
+    Args:
+        payload: The report body.
+        compact: One line instead of indented JSON.
+    """
+    if compact:
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    else:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _data_failure(code: int, category: str, exc: Exception) -> int:
+    """Report one data failure on stderr and return its exit code.
+
+    Args:
+        code: The exit code this class of failure maps to.
+        category: Short label naming the layer that failed.
+        exc: The exception raised.
+
+    Returns:
+        ``code``, unchanged, so callers can ``return _data_failure(...)``.
+    """
+    print(f"{category}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return code
+
+
+def _dispatch_data(args: argparse.Namespace) -> int:
+    """Run one ``data`` subcommand and turn its failures into exit codes.
+
+    Centralised here, once, because the mapping from failure to exit code is the
+    part an operator or a CI script actually depends on, and seven handlers each
+    inventing their own is how two of them end up disagreeing.
+
+    The distinction being drawn is "what did you find?" versus "could you look?".
+    A gate refusal, leakage, an empty accepted set, and a corpus that could not
+    be segmented are findings: the command ran and the answer was no. A missing
+    configuration, an unknown path, or a manifest this build cannot interpret
+    mean no answer exists at all, and reporting those as ``1`` would let a
+    pipeline record "the leakage check found nothing" when in fact it never ran.
+
+    Args:
+        args: Parsed arguments, with ``func`` set to the specific handler.
+
+    Returns:
+        The handler's exit code, or ``1``/``2`` derived from the failure.
+    """
+    from voxshield.data.errors import (
+        AdapterError,
+        AugmentationError,
+        DatasetBuildError,
+        DatasetConfigError,
+        ManifestError,
+    )
+
+    try:
+        return int(args.func(args))
+    except ManifestError as exc:
+        return _data_failure(DATA_CANNOT_RUN, "unreadable manifest", exc)
+    except DatasetConfigError as exc:
+        return _data_failure(DATA_CANNOT_RUN, "configuration", exc)
+    except DatasetBuildError as exc:
+        return _data_failure(DATA_FAILED, "dataset", exc)
+    except (AdapterError, AugmentationError) as exc:
+        return _data_failure(DATA_FAILED, "pipeline", exc)
+
+
+def _data_config(args: argparse.Namespace) -> tuple[DataConfig, DataPaths, str]:
+    """Resolve the dataset configuration for a ``data`` subcommand.
+
+    Precedence for the data root is ``--root``, then ``VOXSHIELD_DATA_ROOT``,
+    then the configuration document. An explicit flag beating an environment
+    variable is why the variable is stripped from the mapping handed to
+    :func:`~voxshield.data.config.load_data_config`, which otherwise gives the
+    environment the last word.
+
+    Args:
+        args: Parsed arguments carrying ``config``, ``root``, and ``compact``.
+
+    Returns:
+        The configuration, its resolved paths, and where the configuration came
+        from.
+
+    Raises:
+        DatasetConfigError: ``--config`` was given and names no file, or the
+            configuration itself is invalid. Both mean the command cannot run,
+            and both are operator-fixable, so neither is a finding about the
+            corpus.
+    """
+    from voxshield.data.config import load_data_config
+    from voxshield.data.errors import DatasetConfigError
+
+    if args.config is not None:
+        target = Path(args.config)
+        if not target.is_file():
+            msg = f"no dataset configuration at {target}"
+            raise DatasetConfigError(msg)
+        source = str(target)
+    elif DEFAULT_DATA_CONFIG.is_file():
+        target = DEFAULT_DATA_CONFIG
+        source = str(target)
+    else:
+        target = None
+        source = "built-in defaults (no configs/data.yaml in the working directory)"
+
+    environ = dict(os.environ)
+    if args.root:
+        environ.pop("VOXSHIELD_DATA_ROOT", None)
+    config = load_data_config(
+        target,
+        overrides={"root": args.root} if args.root else None,
+        env=environ,
+    )
+    return config, config.data_paths(), source
+
+
+def _data_paths_cmd(args: argparse.Namespace) -> int:
+    """Print the resolved data layout and this configuration's identity.
+
+    Decodes nothing and hashes no audio, so it is the command to run first when
+    a build points somewhere unexpected. ``content_fingerprint`` is printed
+    beside ``config_hash`` because the two answer different questions: the first
+    is equal across machines holding the same corpus, the second cites this run.
+    """
+    from voxshield.data.build import jsonable
+    from voxshield.data.manifest import SPLIT_MANIFESTS, dataset_build_id
+
+    config, paths, source = _data_config(args)
+    _emit(
+        jsonable(
+            {
+                "config_source": source,
+                "root": paths.root,
+                "directories": {name: getattr(paths, name) for name in _DATA_DIR_FIELDS[1:]},
+                "config_hash": config.config_hash(),
+                "content_fingerprint": config.content_fingerprint(),
+                "dataset_build_id": dataset_build_id(config),
+                "random_seed": config.random_seed,
+                "license_policy": config.license_policy,
+                "max_files_per_dataset": config.max_files_per_dataset,
+                "write_segment_audio": config.write_segment_audio,
+                "cache_enabled": config.cache.enabled,
+                "datasets_enabled": [entry.dataset_id for entry in config.enabled_datasets()],
+                "datasets_excluded": [
+                    {"dataset_id": entry.dataset_id, "reason": reason}
+                    for entry, reason in config.excluded_datasets()
+                ],
+                "manifests": {
+                    name: paths.manifests / filename
+                    for name, filename in sorted(SPLIT_MANIFESTS.items())
+                },
+                "report_paths": {
+                    name: getattr(paths, f"{name}_path")()
+                    for name in (
+                        "inventory",
+                        "validation",
+                        "split_report",
+                        "quality",
+                        "leakage",
+                        "build_report",
+                        "statistics",
+                    )
+                },
+            }
+        ),
+        compact=args.compact,
+    )
+    return DATA_OK
+
+
+def _discover_cmd(args: argparse.Namespace) -> int:
+    """Inventory the configured corpora and report duplicates and unreadables.
+
+    Decodes nothing beyond what hashing needs, so this is the cheap way to answer
+    "is my corpus even visible to this project" before committing to a build.
+    """
+    from voxshield.data.build import discover_corpus, jsonable
+
+    config, paths, source = _data_config(args)
+    inventory, surviving, registry = discover_corpus(config, paths)
+
+    _emit(
+        jsonable(
+            {
+                "config_source": source,
+                "root": paths.root,
+                "stats": inventory.stats,
+                "registry": registry.report(),
+                "kept": len(surviving),
+                "kept_ids": sorted(record.sample_id for record in surviving),
+                "duplicates": inventory.duplicates,
+                "unreadable": inventory.unreadable,
+                "report_path": paths.inventory_path(),
+            }
+        ),
+        compact=args.compact,
+    )
+    return DATA_OK
+
+
+def _validate_cmd(args: argparse.Namespace) -> int:
+    """Decide which discovered files may become training samples.
+
+    Exits ``1`` when nothing survives. That is a finding about the corpus, not a
+    crash: a directory of short or silent or wrong-format files is exactly what
+    this command exists to say out loud, and exiting ``0`` there would let a build
+    pipeline continue toward an empty manifest.
+    """
+    from voxshield.data.build import discover_corpus, jsonable, validate_corpus
+
+    config, paths, source = _data_config(args)
+    inventory, surviving, _registry = discover_corpus(config, paths)
+    result = validate_corpus(surviving, config, paths, inventory=inventory)
+
+    _emit(
+        jsonable(
+            {
+                "config_source": source,
+                "root": paths.root,
+                "discovered": len(surviving),
+                "accepted": len(result.accepted),
+                "rejected": len(result.rejected),
+                "duration_seconds": round(result.stats.duration_seconds, 3),
+                "speech_seconds": round(result.stats.speech_seconds, 3),
+                "accepted_per_dataset": result.stats.accepted_per_dataset,
+                "rejected_per_reason": result.stats.rejected_per_reason,
+                "unavailable_scopes": result.stats.unavailable_scopes,
+                "rejected_samples": [
+                    item.to_dict() for item in result.rejected[: args.limit]
+                ],
+                "rejected_truncated": len(result.rejected) > args.limit,
+                "report_path": paths.validation_path(),
+            }
+        ),
+        compact=args.compact,
+    )
+    return DATA_OK if result.accepted else DATA_FAILED
+
+
+def _build_cmd(args: argparse.Namespace) -> int:
+    """Run the whole build and report what it produced.
+
+    Every stage report is written before a gate refusal, so this command exits
+    ``1`` with the evidence already on disk and the manifest set unpublished.
+    """
+    from voxshield.data.build import build_dataset, jsonable, summarise
+    from voxshield.data.cache import PreprocessingCache
+
+    config, paths, source = _data_config(args)
+    result = build_dataset(
+        config,
+        paths=paths,
+        split_seed=args.seed,
+        cache=PreprocessingCache(paths, enabled=False) if args.no_cache else None,
+        enforce_gates=not args.no_gates,
+        overwrite=not args.no_overwrite,
+    )
+
+    _emit(
+        jsonable(
+            {
+                "config_source": source,
+                "summary": summarise(result).to_dict(),
+                "build": result.to_dict(),
+                "statistics": result.statistics,
+                "gates": result.gate_report,
+                "leakage": result.leakage,
+                "split": result.assignment,
+                "reports": [str(path) for path in result.reports],
+            }
+        ),
+        compact=args.compact,
+    )
+    return DATA_OK if result.gate_passed else DATA_FAILED
+
+
+def _inspect_cmd(args: argparse.Namespace) -> int:
+    """Print a manifest's header, statistics, and a bounded sample of its rows.
+
+    Reads the manifest and nothing else. It deliberately does not stat the audio
+    each row points at, so it stays fast on a 400k-row manifest and remains a
+    statement about the manifest rather than about the corpus on disk. Use
+    ``test-loader`` for the claim that the audio is actually readable.
+    """
+    from voxshield.data.build import jsonable
+    from voxshield.data.manifest import SPLIT_MANIFESTS, compute_statistics, read_manifest
+    from voxshield.data.splitting import SPLIT_NAMES
+
+    _config, paths, source = _data_config(args)
+    if args.split not in (*SPLIT_NAMES, "all"):
+        print(
+            f"split must be one of {', '.join(SPLIT_NAMES)} or 'all', got {args.split!r}",
+            file=sys.stderr,
+        )
+        return DATA_CANNOT_RUN
+    if args.manifest is not None and args.split != "all":
+        print(
+            "--manifest names a file whose header already fixes its split; "
+            "pass --split all to read it as written",
+            file=sys.stderr,
+        )
+        return DATA_CANNOT_RUN
+
+    target = Path(args.manifest) if args.manifest else paths.manifests / SPLIT_MANIFESTS[args.split]
+    if not target.is_file():
+        print(f"no manifest at {target}; run 'voxshield data build' first", file=sys.stderr)
+        return DATA_CANNOT_RUN
+
+    manifest = read_manifest(target)
+
+    if args.sample is not None:
+        match = next((row for row in manifest.samples if row.sample_id == args.sample), None)
+        if match is None:
+            # An unknown id is a bad argument, not a finding about the corpus, so
+            # it is grouped with "bad split" rather than with a gate refusal.
+            print(
+                f"no sample {args.sample!r} in {target}; it holds "
+                f"{len(manifest.samples)} active row(s)",
+                file=sys.stderr,
+            )
+            return DATA_CANNOT_RUN
+        _emit(
+            jsonable({"config_source": source, "manifest": str(target), "sample": match}),
+            compact=args.compact,
+        )
+        return DATA_OK
+
+    rows = manifest.samples if args.split == "all" else manifest.by_split(args.split)
+    payload: dict[str, Any] = {
+        "config_source": source,
+        "manifest": str(target),
+        "requested_split": args.split,
+        "header": manifest.header,
+        "statistics": compute_statistics(
+            rows, dataset_build_id=manifest.header.dataset_build_id
+        ),
+        "retired_rows": len(manifest.retired),
+    }
+    if args.limit > 0:
+        payload["sample_rows"] = rows[: args.limit]
+    _emit(jsonable(payload), compact=args.compact)
+    return DATA_OK
+
+
+def _check_leakage_cmd(args: argparse.Namespace) -> int:
+    """Re-check every identity axis of a manifest, without rebuilding.
+
+    The build already gates on this; running it separately answers "is the
+    manifest on disk still disjoint", which is the question worth asking before
+    citing a stored corpus. An axis with nothing known to compare is reported as
+    unavailable rather than as clean, and ``--strict`` turns that into a failure
+    so a corpus cannot be cited on the strength of an axis nobody could check.
+    """
+    from voxshield.data.build import jsonable
+    from voxshield.data.leakage import LEAKAGE_AXES, check_leakage
+    from voxshield.data.manifest import SPLIT_MANIFESTS, read_manifest
+
+    _config, paths, source = _data_config(args)
+    target = Path(args.manifest) if args.manifest else paths.manifests / SPLIT_MANIFESTS["all"]
+    if not target.is_file():
+        print(f"no manifest at {target}; run 'voxshield data build' first", file=sys.stderr)
+        return DATA_CANNOT_RUN
+
+    manifest = read_manifest(target)
+    report = check_leakage(manifest.samples)
+    unavailable = sorted(
+        check.axis for check in report.checks if not check.available and not check.leaked
+    )
+    _emit(
+        jsonable(
+            {
+                "config_source": source,
+                "manifest": str(target),
+                "rows": len(manifest.samples),
+                "has_leakage": report.has_leakage,
+                "leaked_axes": list(report.leaked_axes),
+                "axes_checked": list(LEAKAGE_AXES),
+                "unavailable_axes": unavailable,
+                "report": report,
+            }
+        ),
+        compact=args.compact,
+    )
+    if report.has_leakage:
+        return DATA_FAILED
+    if args.strict and unavailable:
+        print(
+            "leakage check passed on the axes it could evaluate, but these axes "
+            f"are unevaluable and --strict was set: {', '.join(unavailable)}",
+            file=sys.stderr,
+        )
+        return DATA_FAILED
+    return DATA_OK
+
+
+def _test_loader_cmd(args: argparse.Namespace) -> int:
+    """Open one split and iterate a few batches, proving the loader yields.
+
+    Exists because "the manifests were written" and "a trainer can read them" are
+    different claims. Reports what was actually observed -- row count, batch
+    width, labels seen, whether augmentation applied -- rather than asserting
+    success.
+
+    Requires Torch, and its absence exits ``1`` with the extra to install, because
+    this is the only command that needs it and the other six must keep working
+    without it.
+    """
+    try:
+        from voxshield.data.torch_dataset import build_dataloader, load_split, summarise_batches
+    except ImportError as exc:  # pragma: no cover -- depends on the install
+        print(f"missing optional dependency: {exc}", file=sys.stderr)
+        return DATA_CANNOT_RUN
+
+    from voxshield.data.build import jsonable
+
+    config, paths, source = _data_config(args)
+    dataset = load_split(
+        args.split,
+        paths=paths,
+        config=config,
+        manifest=args.manifest,
+        epoch=args.epoch,
+        min_coverage=args.min_coverage,
+    )
+    loader = build_dataloader(
+        dataset,
+        batch_size=args.batch_size,
+        num_workers=args.workers,
+        seed=config.random_seed,
+    )
+    summary = summarise_batches(dataset, loader, max_batches=args.batches)
+
+    payload: dict[str, Any] = {
+        "config_source": source,
+        "split": args.split,
+        "row_count": len(dataset),
+        "manifest": str(dataset.manifest.path),
+        "label_counts": {str(key): value for key, value in dataset.label_counts().items()},
+        "batch_size": args.batch_size,
+        "num_workers": args.workers,
+        **summary,
+    }
+    if args.samples > 0:
+        payload["sample_items"] = [
+            _item_summary(dataset[index])
+            for index in range(min(args.samples, len(dataset)))
+        ]
+    _emit(jsonable(payload), compact=args.compact)
+    return DATA_OK if summary.get("ok") else DATA_FAILED
+
+
+def _item_summary(item: dict[str, Any]) -> dict[str, Any]:
+    """Shape and metadata of one loader item, with no audio in the output.
+
+    Args:
+        item: One item from :class:`VoxShieldDataset`.
+
+    Returns:
+        Everything except the waveform values, which are the corpus itself and
+        would make the report useless as a diffable summary.
+    """
+    waveform = item["waveform"]
+    return {
+        "sample_id": item["sample_id"],
+        "waveform_shape": list(waveform.shape),
+        "waveform_dtype": str(waveform.dtype),
+        "length": int(item["length"]),
+        "label": int(item["label"]),
+        "coverage": item["coverage"],
+        "is_padded": bool(item["is_padded"]),
+        "augmented": list(item["augmented"]),
+        "augment_seed": item.get("augment_seed"),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser."""
     parser = argparse.ArgumentParser(prog="voxshield", description=__doc__)
@@ -188,7 +717,199 @@ def build_parser() -> argparse.ArgumentParser:
     )
     process.set_defaults(func=_process)
 
+    _add_data_parser(sub)
+
     return parser
+
+
+def _add_data_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """Register the ``data`` command group and its seven subcommands.
+
+    A group rather than seven top-level commands, because ``inspect`` is already
+    taken by the audit-record reader and because the dataset commands share one
+    resolution contract: a configuration, a root, and a JSON report. Sharing it as
+    a group means the precedence of ``--root`` over ``VOXSHIELD_DATA_ROOT`` is
+    stated once, in :func:`_data_config`, instead of seven times in seven
+    argument parsers.
+
+    Args:
+        sub: The top-level subparser action to register into.
+    """
+
+    def common(parser: argparse.ArgumentParser) -> None:
+        """Add the options every ``data`` subcommand accepts."""
+        parser.add_argument(
+            "--config",
+            default=None,
+            help=(
+                f"Dataset configuration (default: {DEFAULT_DATA_CONFIG} when present, "
+                "otherwise built-in defaults)."
+            ),
+        )
+        parser.add_argument(
+            "--root",
+            default=None,
+            help=(
+                "Data root directory. Overrides VOXSHIELD_DATA_ROOT and the "
+                "configured root."
+            ),
+        )
+        parser.add_argument(
+            "--compact",
+            action="store_true",
+            help="Print one line of JSON instead of indented JSON.",
+        )
+
+    data = sub.add_parser(
+        "data",
+        help="Build, inspect, and audit the dataset.",
+        description=(
+            "Dataset commands. Each prints one JSON report on stdout, sends "
+            "diagnostics to stderr, and exits 0 for a yes, 1 for a no, 2 for "
+            "could-not-run."
+        ),
+    )
+    data_sub = data.add_subparsers(dest="data_command", required=True)
+
+    paths_cmd = data_sub.add_parser(
+        "paths",
+        help="Print the resolved data layout and this configuration's identity.",
+    )
+    common(paths_cmd)
+    paths_cmd.set_defaults(func=_data_paths_cmd, dispatch=_dispatch_data)
+
+    discover = data_sub.add_parser(
+        "discover",
+        help="Inventory the configured corpora; report duplicates and unreadables.",
+    )
+    common(discover)
+    discover.set_defaults(func=_discover_cmd, dispatch=_dispatch_data)
+
+    validate = data_sub.add_parser(
+        "validate",
+        help="Decide which discovered files may become training samples.",
+    )
+    common(validate)
+    validate.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum rejected rows to list in full (default 50).",
+    )
+    validate.set_defaults(func=_validate_cmd, dispatch=_dispatch_data)
+
+    build = data_sub.add_parser(
+        "build",
+        help="Run the full build and publish manifests if the gates pass.",
+    )
+    common(build)
+    build.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Split-assignment seed. Defaults to the configuration's random_seed "
+            "for this command, which is the seed the build id cites."
+        ),
+    )
+    build.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Force a cold build, ignoring the preprocessing cache.",
+    )
+    build.add_argument(
+        "--no-gates",
+        action="store_true",
+        help=(
+            "Publish manifests even when a mandatory gate fails. The reports are "
+            "written either way; this only stops the refusal."
+        ),
+    )
+    build.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="Refuse to replace existing manifests.",
+    )
+    build.set_defaults(func=_build_cmd, dispatch=_dispatch_data)
+
+    inspect = data_sub.add_parser(
+        "inspect",
+        help="Print a manifest's header, statistics, and a bounded sample of rows.",
+    )
+    common(inspect)
+    inspect.add_argument(
+        "--split",
+        default="all",
+        help="Split to read: train, dev, test, or all (default all).",
+    )
+    inspect.add_argument(
+        "--manifest",
+        default=None,
+        help="Explicit manifest path, overriding --split.",
+    )
+    inspect.add_argument(
+        "--sample",
+        default=None,
+        help="Print one row by sample_id and exit.",
+    )
+    inspect.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum rows to print (default 10; 0 prints none).",
+    )
+    inspect.set_defaults(func=_inspect_cmd, dispatch=_dispatch_data)
+
+    leakage = data_sub.add_parser(
+        "check-leakage",
+        help="Re-check every identity axis of a manifest, without rebuilding.",
+    )
+    common(leakage)
+    leakage.add_argument(
+        "--manifest",
+        default=None,
+        help="Manifest to check (default: data/manifests/all.jsonl).",
+    )
+    leakage.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail when an identity axis has nothing known to compare.",
+    )
+    leakage.set_defaults(func=_check_leakage_cmd, dispatch=_dispatch_data)
+
+    loader = data_sub.add_parser(
+        "test-loader",
+        help="Open one split and iterate a few batches. Requires Torch.",
+    )
+    common(loader)
+    loader.add_argument("--split", default="train", help="Split to open (default train).")
+    loader.add_argument(
+        "--manifest",
+        default=None,
+        help="Explicit manifest path, overriding --split.",
+    )
+    loader.add_argument("--batch-size", type=int, default=8, help="Samples per batch.")
+    loader.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Worker processes. 0 reads in this process, which is reproducible.",
+    )
+    loader.add_argument("--batches", type=int, default=4, help="Batches to iterate.")
+    loader.add_argument("--epoch", type=int, default=0, help="Epoch index for augmentation seeds.")
+    loader.add_argument(
+        "--min-coverage",
+        type=float,
+        default=0.0,
+        help="Drop rows whose speech coverage is below this fraction.",
+    )
+    loader.add_argument(
+        "--samples",
+        type=int,
+        default=0,
+        help="Number of individual items to describe (default 0).",
+    )
+    loader.set_defaults(func=_test_loader_cmd, dispatch=_dispatch_data)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -203,7 +924,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_logging(getattr(logging, args.log_level.upper(), logging.INFO))
-    result: int = args.func(args)
+    # ``data`` subcommands register a dispatch wrapper alongside their handler so
+    # that one function, not seven, decides how a failure becomes an exit code.
+    dispatch = getattr(args, "dispatch", None)
+    result: int = dispatch(args) if dispatch is not None else int(args.func(args))
     return result
 
 

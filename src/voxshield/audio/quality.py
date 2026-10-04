@@ -302,8 +302,8 @@ def assess_quality(
     peak = float(np.max(np.abs(finite))) if sample_count else 0.0
     rms_amplitude = float(np.sqrt(np.mean(np.square(finite, dtype=np.float64))))
     dc_offset = float(np.mean(finite, dtype=np.float64))
-    clipping_ratio = (
-        float(np.count_nonzero(np.abs(finite) >= thresholds.clip_threshold) / sample_count)
+    clipping_ratio = float(
+        np.count_nonzero(np.abs(finite) >= thresholds.clip_threshold) / sample_count
     )
 
     rms_dbfs = _to_dbfs(rms_amplitude)

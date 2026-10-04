@@ -189,9 +189,7 @@ class TestProvenance:
         for loaded in (load_audio(_wav_bytes()), load_audio(_mono(), _SR)):
             metadata = summarise_metadata(loaded)
             assert "source_kind" in metadata
-            assert not any(
-                isinstance(v, (np.ndarray, list, bytes)) for v in metadata.values()
-            )
+            assert not any(isinstance(v, (np.ndarray, list, bytes)) for v in metadata.values())
 
 
 class TestUnsupportedSources:

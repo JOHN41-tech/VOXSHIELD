@@ -50,17 +50,19 @@ __all__ = [
 
 # Formats libsndfile reports that are structurally unable to smuggle an
 # unbounded decode. Anything else is refused without further inspection.
-_HARD_REJECT_SUBTYPES = frozenset({
-    "ULAW",
-    "ALAW",
-    "IMA_ADPCM",
-    "MS_ADPCM",
-    "GSM610",
-    "DWVW",
-    "DWVN",
-    "VOICEWORKS",
-    "MPC2K",
-})
+_HARD_REJECT_SUBTYPES = frozenset(
+    {
+        "ULAW",
+        "ALAW",
+        "IMA_ADPCM",
+        "MS_ADPCM",
+        "GSM610",
+        "DWVW",
+        "DWVN",
+        "VOICEWORKS",
+        "MPC2K",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,10 +117,7 @@ def _resolve_source(
             msg = "uploaded audio is empty"
             raise AudioDecodeError(msg)
         if n_bytes > config.max_upload_bytes:
-            msg = (
-                f"upload is {n_bytes} bytes, exceeding the "
-                f"{config.max_upload_bytes}-byte limit"
-            )
+            msg = f"upload is {n_bytes} bytes, exceeding the {config.max_upload_bytes}-byte limit"
             raise AudioTooLargeError(msg)
         return io.BytesIO(bytes(source)), n_bytes
 
@@ -134,8 +133,7 @@ def _resolve_source(
             raise AudioDecodeError(msg)
         if n_bytes > config.max_upload_bytes:
             msg = (
-                f"audio file is {n_bytes} bytes, exceeding the "
-                f"{config.max_upload_bytes}-byte limit"
+                f"audio file is {n_bytes} bytes, exceeding the {config.max_upload_bytes}-byte limit"
             )
             raise AudioTooLargeError(msg)
         return io.BytesIO(path.read_bytes()), n_bytes
@@ -161,17 +159,12 @@ def decode_stream_bytes(raw: bytes, config: AudioConfig) -> tuple[io.BytesIO, in
         msg = "uploaded audio is empty"
         raise AudioDecodeError(msg)
     if n_bytes > config.max_upload_bytes:
-        msg = (
-            f"upload is {n_bytes} bytes, exceeding the "
-            f"{config.max_upload_bytes}-byte limit"
-        )
+        msg = f"upload is {n_bytes} bytes, exceeding the {config.max_upload_bytes}-byte limit"
         raise AudioTooLargeError(msg)
     return io.BytesIO(raw), n_bytes
 
 
-def _validate_header(
-    info: sf.SoundFile, config: AudioConfig
-) -> tuple[int, int, float]:
+def _validate_header(info: sf.SoundFile, config: AudioConfig) -> tuple[int, int, float]:
     """Validate container metadata. Returns ``(channels, frames, duration)``.
 
     This runs against the *declared* header, before any sample data is read.
@@ -210,10 +203,7 @@ def _validate_header(
         msg = "audio declares a sample rate of zero"
         raise AudioDecodeError(msg)
     if sample_rate > config.max_sample_rate:
-        msg = (
-            f"sample rate {sample_rate} Hz exceeds the limit of "
-            f"{config.max_sample_rate} Hz"
-        )
+        msg = f"sample rate {sample_rate} Hz exceeds the limit of {config.max_sample_rate} Hz"
         raise AudioTooLargeError(msg)
 
     frames = int(info.frames)

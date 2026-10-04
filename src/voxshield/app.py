@@ -100,9 +100,7 @@ def create_app(
     # silently discards an injected empty store and writes audit records to a
     # different instance than the caller is inspecting.
     application.state.audio_config = load_audio_config() if config is None else config
-    application.state.audit_store = (
-        _build_audit_store() if audit_store is None else audit_store
-    )
+    application.state.audit_store = _build_audit_store() if audit_store is None else audit_store
     application.state.detector = UnavailableDetector() if detector is None else detector
 
     install_exception_handlers(application)

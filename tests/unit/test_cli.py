@@ -93,9 +93,7 @@ class TestOverrides:
         assert coarse["hop_seconds"] == 3.5
         assert coarse["n_segments"] < default["n_segments"]
 
-    def test_short_policy_pad_pads_a_sub_window_clip(
-        self, tmp_path: Path, capsys
-    ) -> None:
+    def test_short_policy_pad_pads_a_sub_window_clip(self, tmp_path: Path, capsys) -> None:
         path = _write(tmp_path, 3.0)
 
         code, report = _run(capsys, "process", str(path), "--short-policy", "pad")
@@ -105,9 +103,7 @@ class TestOverrides:
         # The padded window is still full width, so features match the nominal.
         assert report["feature_shape"][0] > 0
 
-    def test_short_policy_drop_abstains_on_a_sub_window_clip(
-        self, tmp_path: Path, capsys
-    ) -> None:
+    def test_short_policy_drop_abstains_on_a_sub_window_clip(self, tmp_path: Path, capsys) -> None:
         # 3s of audio against a 4s window, with 'drop', yields no window. That is
         # an abstention (exit 3), not a refusal: the file was read and measured
         # successfully. The stderr message names the actual cause so the fix is
@@ -121,9 +117,7 @@ class TestOverrides:
         assert captured.out == ""
         assert "shorter than the 4.00s analysis window" in captured.err
 
-    def test_short_policy_keep_scores_a_sub_window_clip(
-        self, tmp_path: Path, capsys
-    ) -> None:
+    def test_short_policy_keep_scores_a_sub_window_clip(self, tmp_path: Path, capsys) -> None:
         path = _write(tmp_path, 3.0)
 
         code = main(["process", str(path), "--short-policy", "keep"])
@@ -132,9 +126,7 @@ class TestOverrides:
         report = json.loads(capsys.readouterr().out)
         assert report["n_segments"] == 1
 
-    def test_an_unknown_short_policy_is_rejected_by_the_parser(
-        self, tmp_path: Path
-    ) -> None:
+    def test_an_unknown_short_policy_is_rejected_by_the_parser(self, tmp_path: Path) -> None:
         path = _write(tmp_path, 6.0)
 
         with pytest.raises(SystemExit):
@@ -170,9 +162,7 @@ class TestRefusals:
 
         assert code == EXIT_REFUSED
 
-    def test_too_little_speech_is_an_abstention_not_a_refusal(
-        self, tmp_path: Path, capsys
-    ) -> None:
+    def test_too_little_speech_is_an_abstention_not_a_refusal(self, tmp_path: Path, capsys) -> None:
         # Exit 3, not 1. The clip was read, decoded, and measured; it just does
         # not carry enough speech to window. Reporting that the same way as an
         # undecodable file would tell an operator to re-export audio that is

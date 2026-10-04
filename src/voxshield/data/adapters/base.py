@@ -407,6 +407,7 @@ class DatasetAdapter(ABC):
         session_id: str = UNKNOWN,
         attack_type: str = UNKNOWN,
         channel: str = UNKNOWN,
+        device: str = UNKNOWN,
         source_split: str = UNKNOWN,
         recorded_at: str = UNKNOWN,
         extra: dict[str, str] | None = None,
@@ -426,7 +427,8 @@ class DatasetAdapter(ABC):
             parent_id: Grouping id for splitting. Defaults to the sample id, which
                 is the honest answer for a corpus of independent utterances.
             speaker_id, generator_id, language, session_id, attack_type, channel,
-            source_split, recorded_at: Published metadata, or :data:`UNKNOWN`.
+            device, source_split, recorded_at: Published metadata, or
+            :data:`UNKNOWN`.
             codec: Override the container inferred from the file extension. An
                 adapter that knows the real container better than the extension
                 does should pass it here.
@@ -466,13 +468,42 @@ class DatasetAdapter(ABC):
             codec=known_or_unknown(codec or codec_value),
             session_id=known_or_unknown(session_id),
             attack_type=known_or_unknown(attack_type),
-            channel=known_or_unknown(channel),
+            channel=known_or_unknown(self.declared("channel", channel)),
+            device=known_or_unknown(self.declared("device", device)),
             source_split=known_or_unknown(source_split),
             recorded_at=known_or_unknown(recorded_at),
             duration_seconds=duration,
             sample_rate=sample_rate,
             extra=record_extra,
         )
+
+    def declared(self, name: str, found: str = UNKNOWN) -> str:
+        """An entry-level ``metadata`` value, used only when discovery found none.
+
+        Some corpora publish channel or handset populations once, in a paper or a
+        licence appendix, rather than per file, so no adapter can extract them
+        during discovery and every record would be :data:`UNKNOWN` -- which makes
+        ``split.require_channel_disjoint`` unsatisfiable for a corpus that in fact
+        has one documented population. An operator can state it once in the entry
+        instead of forking an adapter.
+
+        The fallback applies to *every* file in the entry, uniformly. That is what
+        makes it usable for a whole-population claim and exactly why it must not be
+        used to label a mixed corpus: a mixed corpus declared as one value is not
+        half-right, it is a false statement that survives into every manifest row.
+        Published per-file metadata always wins over the declaration.
+
+        Args:
+            name: The metadata key, e.g. ``"channel"``.
+            found: What discovery extracted for this file.
+
+        Returns:
+            ``found`` when it is a real value, otherwise the entry-level
+            declaration, otherwise :data:`UNKNOWN`.
+        """
+        if known_or_unknown(found) != UNKNOWN:
+            return found
+        return self.flag(name, UNKNOWN)
 
     def probe_header(self, path: Path) -> tuple[float | None, int | None]:
         """Read duration and sample rate from a container header.

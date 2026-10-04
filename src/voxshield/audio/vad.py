@@ -228,9 +228,7 @@ def detect_speech(
 
     energy_db, zcr, flatness = compute_frame_features(frames)
 
-    spectral_ok = (zcr <= vad.max_zero_crossing_rate) & (
-        flatness <= vad.max_spectral_flatness
-    )
+    spectral_ok = (zcr <= vad.max_zero_crossing_rate) & (flatness <= vad.max_spectral_flatness)
 
     # --- Seed arm: find frames that are confidently speech -----------------
     seed_level = float(np.percentile(energy_db, vad.seed_percentile))
@@ -241,9 +239,7 @@ def detect_speech(
         # Reference is the quiet end of the confident-speech frames, not its
         # median, so the spread arm is anchored to the weakest speech we are
         # already sure about.
-        reference = float(
-            np.percentile(energy_db[seed_mask], vad.seed_reference_percentile)
-        )
+        reference = float(np.percentile(energy_db[seed_mask], vad.seed_reference_percentile))
     else:
         # No frame is confident speech. Fall back to the loudest frame in the
         # clip so the threshold still adapts, and let the spectral gates and the
@@ -356,8 +352,7 @@ def find_speech_regions(
     vad: VadConfig = cfg.vad
 
     padded = [
-        (start - vad.region_padding_s, end + vad.region_padding_s)
-        for start, end in mask.regions()
+        (start - vad.region_padding_s, end + vad.region_padding_s) for start, end in mask.regions()
     ]
     if not padded:
         return []

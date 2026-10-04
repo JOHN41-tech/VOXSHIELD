@@ -217,9 +217,7 @@ class TestEnergyVadDetector:
         first = EnergyVadDetector().regions(signal, _SR)
         second = EnergyVadDetector().regions(signal, _SR)
 
-        assert [(r.start_s, r.end_s) for r in first] == [
-            (r.start_s, r.end_s) for r in second
-        ]
+        assert [(r.start_s, r.end_s) for r in first] == [(r.start_s, r.end_s) for r in second]
 
     def test_name_is_reported_for_audit(self) -> None:
         assert EnergyVadDetector().name == "energy"

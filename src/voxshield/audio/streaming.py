@@ -301,9 +301,7 @@ class StreamingProcessor:
         without losing the window's position in the stream.
         """
         rate = float(self.sample_rate)
-        while len(self._buffer) - (self._consumed - self._buffer_start) >= (
-            self._window_samples
-        ):
+        while len(self._buffer) - (self._consumed - self._buffer_start) >= (self._window_samples):
             offset = self._consumed - self._buffer_start
             window = self._buffer[offset : offset + self._window_samples]
 

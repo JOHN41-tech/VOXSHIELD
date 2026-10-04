@@ -50,9 +50,7 @@ def captured() -> Iterator[io.StringIO]:
 
 def _emitted(stream: io.StringIO) -> list[dict[str, object]]:
     return [
-        json.loads(line)
-        for line in stream.getvalue().splitlines()
-        if line.strip().startswith("{")
+        json.loads(line) for line in stream.getvalue().splitlines() if line.strip().startswith("{")
     ]
 
 
@@ -84,17 +82,13 @@ class TestStructuredFields:
         getattr(get_logger("test"), level)("m", extra={"k": "v"})
         assert _emitted(captured)[-1]["k"] == "v"
 
-    def test_stdlib_passthrough_is_not_treated_as_a_field(
-        self, captured: io.StringIO
-    ) -> None:
+    def test_stdlib_passthrough_is_not_treated_as_a_field(self, captured: io.StringIO) -> None:
         get_logger("test").warning("m", extra={"k": "v"}, stacklevel=2)
         record = _emitted(captured)[-1]
         assert record["k"] == "v"
         assert "stacklevel" not in record
 
-    def test_reserved_record_keys_cannot_overwrite(
-        self, captured: io.StringIO
-    ) -> None:
+    def test_reserved_record_keys_cannot_overwrite(self, captured: io.StringIO) -> None:
         # logging raises if extra would clobber an existing attribute. Filtering
         # them means a careless field name degrades to "missing", never to a
         # crash inside an error handler.
@@ -132,9 +126,7 @@ class TestPayloadRedaction:
         assert "secret" not in str(record["payload"])
         assert "redacted" in str(record["payload"])
 
-    def test_long_numeric_sequence_is_dropped_whole(
-        self, captured: io.StringIO
-    ) -> None:
+    def test_long_numeric_sequence_is_dropped_whole(self, captured: io.StringIO) -> None:
         # Truncating would still leak a fragment of the audio, so the list is
         # replaced entirely with a length marker.
         get_logger("test").info("m", extra={"pcm": list(range(4_000))})

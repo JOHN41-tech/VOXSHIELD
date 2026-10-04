@@ -115,7 +115,7 @@ a numeric sequence of 32 or fewer values is not long enough to trip the length
 rule. A short sample list therefore survives both screens:
 
 ```python
-safe_metadata({"samples_2": [0.1] * 8})   # -> {"samples_2": [0.1, ... , 0.1]}
+safe_metadata({"samples_2": [0.1] * 8})  # -> {"samples_2": [0.1, ... , 0.1]}
 safe_metadata({"samples_2": [0.1] * 33})  # -> {"samples_2": "[list len=33 redacted]"}
 ```
 

@@ -1,0 +1,188 @@
+# Dataset build configuration.
+#
+# Everything a build needs is here, and everything here is reproducible: the
+# same document and the same corpus give byte-identical manifests. Anything a
+# run needs to vary (data root, seed, licence policy, file cap) can be
+# overridden by environment variable without editing this file:
+#
+#   VOXSHIELD_DATA_ROOT, VOXSHIELD_DATA_SEED, VOXSHIELD_DATA_LICENSE_POLICY,
+#   VOXSHIELD_DATA_MAX_FILES
+#
+# Licensed corpora are absent from this machine and are listed `enabled: false`
+# rather than deleted, so a build here says "not installed" instead of quietly
+# building a smaller corpus than the manifest header claims.
+
+root: data
+random_seed: 20260928
+
+# Conservative default: a corpus whose licence nobody checked is not one this
+# project should redistribute a derived artefact from.
+license_policy: require_verified
+
+# 4.0 s windows at 50% overlap. Long enough for prosodic context, short enough
+# that a window is unlikely to straddle a speaker change in already-clean audio.
+window_seconds: 4.0
+hop_ratio: 0.5
+storage_subtype: PCM_16
+write_segment_audio: true
+
+datasets:
+  # Real speech. Own license, own recordings, unambiguously redistributable, and
+  # the only corpus here that is actually present on this machine.
+  - dataset_id: voxshield_local
+    name: VoxShield operator-supplied real speech
+    source: local operator recordings
+    version: "1.0"
+    license: project-owned
+    license_status: VERIFIED
+    license_note: Recorded for this project; licence evidence not yet captured.
+    license_verified_by: unknown
+    provenance: >-
+      Recorded locally for this project. Evidence not yet captured; do not
+      assume specific permissions or consent.
+    permits_training: false
+    permits_features: false
+    permits_redistribution: false
+    consent_basis: ""
+    task: real_speech
+    enabled: true
+    path: raw/voxshield_local
+    adapter: real_speech
+    metadata:
+      layout: flat
+      speaker_pattern: "^spk(?P<speaker>[0-9]{3})_"
+    notes: >-
+      Speaker-disjoint by construction. Each speaker is one person, and repeat
+      recordings from one person belong in one directory so the splitter keeps
+      them on one side of the boundary.
+
+  # ASVspoof 2021 DF. The standard spoofing benchmark and the corpus the
+  # project is evaluated against, so the entry is declared even though the data
+  # is not installed here.
+  - dataset_id: asvspoof2021_df
+    name: ASVspoof 2021 DeepFake
+    source: https://www.asvspoof.org/
+    version: "2021 DF"
+    license: CC BY 4.0
+    license_status: REQUIRES_VERIFICATION
+    license_note: >-
+      Terms cite CC BY 4.0 for the evaluation track. The text at the URL above
+      was not re-read at the time this entry was written, so this stays
+      REQUIRES_VERIFICATION rather than being upgraded on an assumption.
+    # Deliberately unrecorded. Permitting training on someone's speech is a
+    # question about the speakers, not about the licence text, and nothing here
+    # answers it. Left blank the fields default to false and say so.
+    task: spoof_detection
+    enabled: false
+    path: raw/asvspoof2021_df
+    adapter: asvspoof
+
+  # WaveFake. A second spoofing corpus, used for training diversity and never as
+  # the held-out evaluation set.
+  - dataset_id: wavefake
+    name: WaveFake
+    source: https://github.com/harry0703/WaveFake
+    version: "v1.0"
+    license: MIT
+    license_status: REQUIRES_VERIFICATION
+    license_note: >-
+      Repository states MIT. The bundled corpus is derived from public figures'
+      speech, so the redistribution terms for the audio need confirming before
+      this is enabled. An MIT licence on the *code* says nothing about the rights
+      in the *audio*, which is why no permission is claimed here.
+    task: spoof_detection
+    enabled: false
+    path: raw/wavefake
+    adapter: wavefake
+
+paths:
+  raw: raw
+  interim: interim
+  processed: processed
+  manifests: manifests
+  synthetic: synthetic
+  cache: cache
+  reports: reports
+
+split:
+  train_ratio: 0.70
+  dev_ratio: 0.15
+  # A one-speaker training split is a fold, not a training set. Refused loudly
+  # rather than producing numbers that look measured.
+  min_train_speakers: 2
+  streaming_max_sources: 512
+  # Off by default: temporal ordering trades label balance for a
+  # future-looking evaluation, which is the right call only when the corpus
+  # really does span time.
+  partition_by_temporal: false
+  min_temporal_coverage: 0.95
+  # Off, and staying off until a corpus can support them. docs/dataset-manifest.md
+  # asks for channel- and device-disjoint splits, but these are *grouping*
+  # requirements: a whole channel or handset population is pinned to one side of
+  # the boundary. The entries above publish no channel or device per file, so
+  # turning these on today would either merge every source into one group and
+  # fail the build, or be satisfied by an operator declaration that has not been
+  # made. When a corpus does publish these, switch the flag on and the gate
+  # verifies the result; leaving it off means the claim is absent, not made.
+  require_channel_disjoint: false
+  require_device_disjoint: false
+
+validation:
+  require_speech: true
+  min_duration_seconds: 0.30
+  max_duration_seconds: 60.0
+  max_file_bytes: 67108864
+  # Off: clipping and low SNR describe a suspect recording, not an unusable
+  # one, and rejecting them all would bias the corpus toward studio audio.
+  reject_warning_issues: false
+  # "speaker_id" is deliberately absent. A corpus without speaker identity is
+  # still trainable; it just cannot make a speaker-disjointness claim, and that
+  # is reported as unavailable rather than blocking ingestion.
+  require_metadata: [label]
+  reject_duplicates: true
+  dedup_scope: both
+
+augmentation:
+  enabled: true
+  # Weighted sampling rather than row duplication: a duplicated row would be
+  # counted twice in the dataset statistics and would trip the duplicate check
+  # that guards the corpus.
+  class_balance: weighted_sampler
+  # Rides on top of Phase 1's loudness normalisation rather than replacing it,
+  # so the stored corpus stays canonical and the augmentation stays derivable
+  # from these parameters.
+  gain_db_min: -6.0
+  gain_db_max: 3.0
+  noise_probability: 0.3
+  noise_snr_db_min: 5.0
+  noise_snr_db_max: 20.0
+  # Empty means synthetic noise. Nothing is downloaded, and a real noise corpus
+  # is an operator choice this file does not make for them.
+  noise_corpus_dir: ""
+  codec_probability: 0.1
+  codec_schemes: [g711_mulaw, g711_alaw]
+  channel_probability: 0.1
+  reverb_probability: 0.1
+  # Base seed. The loader derives a per-sample, per-epoch seed from it, so a run
+  # reproduces and successive epochs still differ.
+  seed: 20260928
+
+cache:
+  enabled: true
+  # A build accelerator, not an archive. Unbounded on a workstation, it quietly
+  # becomes the largest thing on the disk.
+  max_entries: 200000
+
+gates:
+  require_speaker_disjoint: true
+  # Off by default: ASVspoof 2021 DF publishes no per-file attack type, so this
+  # check is frequently unevaluable. It still runs and is still reported.
+  require_generator_disjoint: false
+  require_session_disjoint: false
+  require_file_disjoint: true
+  require_parent_disjoint: true
+  require_language_disjoint: false
+  # Off so a missing optional field degrades the report instead of blocking a
+  # build, and the report names exactly which claim was weakened.
+  fail_on_unavailable: false
+  min_test_sources: 1

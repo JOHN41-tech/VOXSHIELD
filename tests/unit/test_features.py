@@ -157,13 +157,9 @@ class TestComputeLogMel:
     def test_deterministic(self, cfg: FeatureConfig) -> None:
         rng = np.random.default_rng(11)
         samples = (rng.standard_normal(4 * _SR) * 0.1).astype(np.float32)
-        assert np.array_equal(
-            compute_log_mel(samples, cfg), compute_log_mel(samples, cfg)
-        )
+        assert np.array_equal(compute_log_mel(samples, cfg), compute_log_mel(samples, cfg))
 
-    def test_signal_shorter_than_one_frame_still_produces_output(
-        self, cfg: FeatureConfig
-    ) -> None:
+    def test_signal_shorter_than_one_frame_still_produces_output(self, cfg: FeatureConfig) -> None:
         # Centre-padding means a sub-frame signal is padded rather than dropped.
         # What matters is the contract: the output always has n_mels columns and
         # never has a non-finite entry, so a model cannot be handed a ragged array.

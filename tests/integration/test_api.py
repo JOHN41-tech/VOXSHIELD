@@ -63,7 +63,9 @@ class TestFormatMetadata:
 
 
 class TestAnalyzeWithoutModel:
-    def test_returns_success_with_a_null_score(self, client, wav: Callable, samples: Callable) -> None:
+    def test_returns_success_with_a_null_score(
+        self, client, wav: Callable, samples: Callable
+    ) -> None:
         response = _post(client, wav, samples)
         # An unavailable model is a normal success: the service is healthy and
         # the audio was understood. A 5xx here would push callers to retry a
@@ -78,11 +80,15 @@ class TestAnalyzeWithoutModel:
         assert body["recommended_action"]["action"] == "none"
         assert body["recommended_action"]["risk_band"] == "unknown"
 
-    def test_never_claims_to_have_retained_audio(self, client, wav: Callable, samples: Callable) -> None:
+    def test_never_claims_to_have_retained_audio(
+        self, client, wav: Callable, samples: Callable
+    ) -> None:
         body = _post(client, wav, samples).json()
         assert body["audio_retained"] is False
 
-    def test_echoes_the_pseudonymous_session(self, client, wav: Callable, samples: Callable) -> None:
+    def test_echoes_the_pseudonymous_session(
+        self, client, wav: Callable, samples: Callable
+    ) -> None:
         body = _post(client, wav, samples, session_id=_SESSION2).json()
         assert body["session_id"] == _SESSION2
 
@@ -212,9 +218,7 @@ class TestErrorTranslation:
         assert "BytesIO" not in message
         assert "Error opening" not in message
 
-    def test_unsupported_container_rejected(
-        self, client, wav: Callable, samples: Callable
-    ) -> None:
+    def test_unsupported_container_rejected(self, client, wav: Callable, samples: Callable) -> None:
         response = client.post(
             "/v1/analyze/file",
             files={"audio": ("call.flac", wav(samples(4.0), fmt="FLAC"), "audio/flac")},
@@ -224,9 +228,7 @@ class TestErrorTranslation:
         # path is covered by the AIFF case below.
         assert response.status_code == 200
 
-    def test_disallowed_container_rejected(
-        self, client, wav: Callable, samples: Callable
-    ) -> None:
+    def test_disallowed_container_rejected(self, client, wav: Callable, samples: Callable) -> None:
         # 415 is the honest status here: the client's media type is wrong, and
         # the /v1/meta/formats response told them so.
         response = client.post(
@@ -237,9 +239,7 @@ class TestErrorTranslation:
         assert response.status_code == 415
         assert response.json()["code"] == "UNSUPPORTED_AUDIO_FORMAT"
 
-    def test_silence_abstains_rather_than_scoring(
-        self, client_for, wav: Callable
-    ) -> None:
+    def test_silence_abstains_rather_than_scoring(self, client_for, wav: Callable) -> None:
         # Silence has no verdict. Reporting one would be an accusation against
         # an empty recording.
         from tests.conftest import StubDetector
@@ -310,18 +310,24 @@ class TestAuditTrail:
         assert "samples" not in serialised
         assert "waveform" not in serialised
 
-    def test_record_asserts_no_raw_audio(self, client, store, wav: Callable, samples: Callable) -> None:
+    def test_record_asserts_no_raw_audio(
+        self, client, store, wav: Callable, samples: Callable
+    ) -> None:
         # The guarantee is legible from the record itself, so an auditor can
         # confirm retention without reading the implementation.
         _post(client, wav, samples)
         assert next(iter(store.iter_all())).raw_audio_persisted is False
 
-    def test_record_carries_an_expiry(self, client, store, wav: Callable, samples: Callable) -> None:
+    def test_record_carries_an_expiry(
+        self, client, store, wav: Callable, samples: Callable
+    ) -> None:
         _post(client, wav, samples)
         record = next(iter(store.iter_all()))
         assert record.expires_at > record.created_at
 
-    def test_unique_request_id_per_call(self, client, store, wav: Callable, samples: Callable) -> None:
+    def test_unique_request_id_per_call(
+        self, client, store, wav: Callable, samples: Callable
+    ) -> None:
         _post(client, wav, samples)
         _post(client, wav, samples, session_id=_SESSION2)
         records = list(store.iter_all())

@@ -96,15 +96,17 @@ class TestDetectSpeech:
         mask = detect_speech(noise, _SR)
         assert mask.speech_seconds < 4 * 0.5
 
-    def test_is_gain_invariant_after_normalisation(
-        self, speech_samples: np.ndarray
-    ) -> None:
+    def test_is_gain_invariant_after_normalisation(self, speech_samples: np.ndarray) -> None:
         # The pipeline normalises loudness before the VAD runs, so the contract
         # is that a quiet and a loud copy of the same call agree once each has
         # been through preprocessing. Testing the raw gain range instead would
         # only assert that the absolute floor exists.
-        quiet = detect_speech(preprocess((speech_samples * 0.02).astype(np.float32), _SR).samples, _SR)
-        loud = detect_speech(preprocess((speech_samples * 0.8).astype(np.float32), _SR).samples, _SR)
+        quiet = detect_speech(
+            preprocess((speech_samples * 0.02).astype(np.float32), _SR).samples, _SR
+        )
+        loud = detect_speech(
+            preprocess((speech_samples * 0.8).astype(np.float32), _SR).samples, _SR
+        )
         assert quiet.has_speech and loud.has_speech
         assert quiet.speech_ratio == pytest.approx(loud.speech_ratio, abs=0.1)
 

@@ -33,9 +33,7 @@ class TestSegmentSpeech:
         cfg = AudioConfig()
         n = int(10.0 * _SR)
         signal = np.zeros(n, dtype=np.float32)
-        signal[:] = 0.2 * np.sin(
-            2 * np.pi * 220 * np.arange(n) / _SR
-        ).astype(np.float32)
+        signal[:] = 0.2 * np.sin(2 * np.pi * 220 * np.arange(n) / _SR).astype(np.float32)
         segments = segment_speech(n, _mask_for(signal), _SR, cfg)
         assert len(segments) > 1
         for seg in segments:
@@ -52,7 +50,9 @@ class TestSegmentSpeech:
         segments = segment_speech(n, _mask_for(signal), _SR, cfg)
         for prev, nxt in pairwise(segments):
             assert nxt.start_sample > prev.start_sample
-            assert nxt.end_sample > prev.end_sample, "a window was fully contained in its predecessor"
+            assert nxt.end_sample > prev.end_sample, (
+                "a window was fully contained in its predecessor"
+            )
 
     def test_short_but_sufficient_signal_is_not_discarded(self) -> None:
         # A clip longer than one window but shorter than two is a very common

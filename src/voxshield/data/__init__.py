@@ -25,7 +25,14 @@ none of those should pay for ``soundfile`` or a dataset scan.
 
 from __future__ import annotations
 
-from voxshield.data.config import DataConfig, DatasetEntry
+from voxshield.data.config import (
+    CacheConfig,
+    DataConfig,
+    DatasetEntry,
+    GateConfig,
+    SplitConfig,
+    ValidationConfig,
+)
 from voxshield.data.errors import (
     AdapterError,
     DatasetBuildError,
@@ -47,6 +54,20 @@ from voxshield.data.labels import (
     attack_family,
     encode_label,
 )
+from voxshield.data.manifest import (
+    MANIFEST_SCHEMA_VERSION,
+    DatasetStatistics,
+    Manifest,
+    ManifestEntry,
+    ManifestHeader,
+    compute_statistics,
+    dataset_build_id,
+    read_manifest,
+    retire_samples,
+    write_manifest,
+    write_manifest_set,
+    write_statistics,
+)
 from voxshield.data.paths import DataPaths
 from voxshield.data.schema import UNKNOWN, SampleRecord, SourceRecord, namespace_speaker
 
@@ -55,24 +76,40 @@ __all__ = [
     "BONA_FIDE",
     "LABELS",
     "LABEL_TO_INDEX",
+    "MANIFEST_SCHEMA_VERSION",
     "SPOOF",
     "UNCLASSIFIED",
     "UNKNOWN",
     "AdapterError",
+    "CacheConfig",
     "DataConfig",
     "DataPaths",
     "DatasetBuildError",
     "DatasetConfigError",
     "DatasetEntry",
     "DatasetLeakageError",
+    "DatasetStatistics",
     "DatasetUnavailableError",
+    "GateConfig",
+    "Manifest",
+    "ManifestEntry",
     "ManifestError",
+    "ManifestHeader",
     "QualityGateError",
     "RegistryError",
     "SampleRecord",
     "SourceRecord",
+    "SplitConfig",
     "SplitError",
+    "ValidationConfig",
     "attack_family",
+    "compute_statistics",
+    "dataset_build_id",
     "encode_label",
     "namespace_speaker",
+    "read_manifest",
+    "retire_samples",
+    "write_manifest",
+    "write_manifest_set",
+    "write_statistics",
 ]

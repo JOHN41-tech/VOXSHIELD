@@ -168,6 +168,20 @@ class SplitConfig:
             balance for a genuine future-looking evaluation, so it is opt-in.
         min_temporal_coverage: Fraction of files that must carry ``recorded_at``
             for temporal ordering to be used at all.
+        require_channel_disjoint: Make the split channel-disjoint, as
+            ``docs/dataset-manifest.md`` requires. Off by default because it is a
+            *grouping* constraint with a real cost: whole channel populations are
+            pinned to one side, so a corpus where every recording is wideband
+            cannot produce a channel-disjoint split at all and the build refuses
+            rather than quietly labelling one "channel-disjoint". Files with an
+            unpublished channel are grouped as if unknown, which makes them claim
+            nothing; :mod:`voxshield.data.leakage` reports the axis as unavailable
+            so the weakened claim is visible.
+        require_device_disjoint: The same, for capture device. Kept separate from
+            ``require_channel_disjoint`` because the two axes need not be
+            populated by the same corpus: a telephone corpus publishes channel
+            conditions but no handset population, and a locally captured corpus
+            may publish the reverse.
     """
 
     train_ratio: float = 0.70
@@ -179,6 +193,8 @@ class SplitConfig:
     streaming_max_sources: int = 512
     partition_by_temporal: bool = False
     min_temporal_coverage: float = 0.95
+    require_channel_disjoint: bool = False
+    require_device_disjoint: bool = False
 
     def __post_init__(self) -> None:
         for name in ("train_ratio", "dev_ratio"):
@@ -216,6 +232,8 @@ class SplitConfig:
             "streaming_max_sources": self.streaming_max_sources,
             "partition_by_temporal": self.partition_by_temporal,
             "min_temporal_coverage": self.min_temporal_coverage,
+            "require_channel_disjoint": self.require_channel_disjoint,
+            "require_device_disjoint": self.require_device_disjoint,
         }
 
 
@@ -482,6 +500,26 @@ class DatasetEntry:
             determined -- never invented.
         license_status: One of :data:`LICENSE_STATUSES`.
         license_note: Free text, typically the evidence a human checked.
+        license_verified_by: Who checked the licence, and stands behind the
+            status. Required for :data:`LICENSE_VERIFIED`; ``"unknown"`` for every
+            other status, because "nobody has checked" is the honest answer there.
+        provenance: Where the audio came from and how it was obtained, in one
+            sentence a stranger could follow -- "operator call recordings on
+            handset X", not "local data". Empty when not yet recorded.
+        permits_training: Whether the licence permits training a model on this
+            corpus. ``False`` by default: an unrecorded permission is a *no*, not
+            a maybe, because the alternative is a build that trains on audio
+            nobody agreed to.
+        permits_features: Whether derived features or embeddings may be stored
+            and used. Distinct from training: a licence can permit one and forbid
+            the other, and a corpus used only for feature extraction is still
+            processing.
+        permits_redistribution: Whether derived artefacts may leave the
+            controlled environment. The strictest of the three, and the one that
+            decides whether a manifest can be published at all.
+        consent_basis: The consent or other lawful basis for the speakers in the
+            audio, with a reference an auditor could follow. Required whenever any
+            permission is claimed.
         task: ``"spoof_detection"`` or ``"real_speech"``.
         enabled: Whether a build should use it at all. An entry can be present
             and correct while the corpus is not on this machine.
@@ -502,6 +540,12 @@ class DatasetEntry:
     path: str
     adapter: str
     license_note: str = ""
+    license_verified_by: str = ""
+    provenance: str = ""
+    permits_training: bool = False
+    permits_features: bool = False
+    permits_redistribution: bool = False
+    consent_basis: str = ""
     notes: str = ""
     metadata: Mapping[str, str] = field(default_factory=dict)
 
@@ -538,6 +582,38 @@ class DatasetEntry:
                 "'unknown'; fix the license or downgrade license_status"
             )
             raise DatasetConfigError(msg)
+        if self.license_status == LICENSE_VERIFIED and not self.license_verified_by.strip():
+            # Same bookkeeping integrity as the check above: a verified licence with
+            # nobody behind it cannot be acted on when somebody later asks who
+            # confirmed it, which is the only question the status exists to answer.
+            msg = (
+                f"dataset {self.dataset_id!r} is marked VERIFIED but records no "
+                "license_verified_by; name whoever checked it, or downgrade "
+                "license_status"
+            )
+            raise DatasetConfigError(msg)
+        claimed = (
+            self.permits_training,
+            self.permits_features,
+            self.permits_redistribution,
+        )
+        if any(claimed) and not self.consent_basis.strip():
+            permissions = [
+                name
+                for name, value in (
+                    ("training", self.permits_training),
+                    ("features", self.permits_features),
+                    ("redistribution", self.permits_redistribution),
+                )
+                if value
+            ]
+            msg = (
+                f"dataset {self.dataset_id!r} claims permission for "
+                f"{', '.join(permissions)} with no consent_basis; a permission "
+                "nobody can trace is not a permission, so either record the basis "
+                "or withdraw the claim"
+            )
+            raise DatasetConfigError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -548,6 +624,12 @@ class DatasetEntry:
             "license": self.license,
             "license_status": self.license_status,
             "license_note": self.license_note,
+            "license_verified_by": self.license_verified_by,
+            "provenance": self.provenance,
+            "permits_training": self.permits_training,
+            "permits_features": self.permits_features,
+            "permits_redistribution": self.permits_redistribution,
+            "consent_basis": self.consent_basis,
             "task": self.task,
             "enabled": self.enabled,
             "path": self.path,
@@ -588,6 +670,12 @@ class DatasetEntry:
             license=str(payload["license"]),
             license_status=str(payload["license_status"]).upper(),
             license_note=str(payload.get("license_note", "")),
+            license_verified_by=str(payload.get("license_verified_by", "")),
+            provenance=str(payload.get("provenance", "")),
+            permits_training=bool(payload.get("permits_training", False)),
+            permits_features=bool(payload.get("permits_features", False)),
+            permits_redistribution=bool(payload.get("permits_redistribution", False)),
+            consent_basis=str(payload.get("consent_basis", "")),
             task=str(payload["task"]),
             enabled=bool(payload.get("enabled", True)),
             path=str(payload["path"]),

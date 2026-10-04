@@ -71,9 +71,7 @@ class TestActionLadder:
         assert action.requires_human_review is True
 
     def test_unknown_band_gives_no_action(self) -> None:
-        action = actions_for(
-            band=RiskBand.UNKNOWN, speech_seconds=5.0, model_version="v1"
-        )
+        action = actions_for(band=RiskBand.UNKNOWN, speech_seconds=5.0, model_version="v1")
         assert action.action is ActionType.NONE
 
     def test_never_blocks(self) -> None:

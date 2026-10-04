@@ -53,11 +53,7 @@ def _riff_header(
     """
     byte_rate = sample_rate * channels * bits_per_sample // 8
     block_align = channels * bits_per_sample // 8
-    data_bytes = (
-        declared_data_bytes
-        if declared_data_bytes is not None
-        else _SR * block_align
-    )
+    data_bytes = declared_data_bytes if declared_data_bytes is not None else _SR * block_align
     return (
         b"RIFF"
         + struct.pack("<I", 36 + data_bytes)
@@ -101,9 +97,7 @@ class TestHappyPath:
         # mutually consistent. This is what the audit trail records.
         decoded = decode_audio_bytes(wav(samples(1.0)), AudioConfig())
         assert decoded.frames == decoded.samples.size
-        assert decoded.duration_seconds == pytest.approx(
-            decoded.frames / decoded.sample_rate
-        )
+        assert decoded.duration_seconds == pytest.approx(decoded.frames / decoded.sample_rate)
 
 
 class TestSizeLimits:
@@ -158,7 +152,9 @@ class TestSizeLimits:
 
 class TestFormatAllowList:
     @pytest.mark.parametrize("fmt", ["AIFF", "OGG", "AU"])
-    def test_rejects_unsupported_container(self, wav: Callable, samples: Callable, fmt: str) -> None:
+    def test_rejects_unsupported_container(
+        self, wav: Callable, samples: Callable, fmt: str
+    ) -> None:
         payload = wav(samples(0.5), fmt=fmt)
         with pytest.raises(UnsupportedAudioFormatError):
             decode_audio_bytes(payload, AudioConfig())
@@ -225,25 +221,21 @@ class TestMalformedInput:
         except _TYPED_DECODE_ERRORS:
             return
         assert decoded.frames <= _SR
-        assert decoded.duration_seconds == pytest.approx(
-            decoded.frames / decoded.sample_rate
-        )
+        assert decoded.duration_seconds == pytest.approx(decoded.frames / decoded.sample_rate)
 
     def test_dishonest_header_cannot_inflate_reported_duration(
         self, wav: Callable, samples: Callable
     ) -> None:
         # Header claims a full second, body carries a few dozen samples.
         honest = wav(samples(1.0))
-        lying = _riff_header(declared_data_bytes=2 * _SR * 2) + honest[44:44 + 96]
+        lying = _riff_header(declared_data_bytes=2 * _SR * 2) + honest[44 : 44 + 96]
         assert len(lying) < 200
         try:
             decoded = decode_audio_bytes(lying, AudioConfig())
         except _TYPED_DECODE_ERRORS:
             return
         assert decoded.frames < _SR
-        assert decoded.duration_seconds == pytest.approx(
-            decoded.frames / decoded.sample_rate
-        )
+        assert decoded.duration_seconds == pytest.approx(decoded.frames / decoded.sample_rate)
 
 
 class TestDegenerateSignals:

@@ -66,10 +66,10 @@ _FORBIDDEN_KEY_PATTERN = re.compile(
 
 # Shapes that indicate a direct identifier regardless of the key name.
 _IDENTIFIER_VALUE_PATTERNS = (
-    re.compile(r"^\+?\d[\d\s().-]{7,}$"),          # phone-like
-    re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{10,}$"),    # IBAN-like
-    re.compile(r"^\d{3}-\d{2}-\d{4}$"),             # SSN-like
-    re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$"), # email-like
+    re.compile(r"^\+?\d[\d\s().-]{7,}$"),  # phone-like
+    re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{10,}$"),  # IBAN-like
+    re.compile(r"^\d{3}-\d{2}-\d{4}$"),  # SSN-like
+    re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$"),  # email-like
 )
 
 
@@ -128,10 +128,7 @@ def _screen_value(key: str, value: Any) -> None:
     3. A string that matches a known identifier shape is rejected.
     """
     if isinstance(value, (bytes, bytearray, memoryview)):
-        msg = (
-            f"audit field {key!r} holds a binary payload; audit records may "
-            "not carry audio"
-        )
+        msg = f"audit field {key!r} holds a binary payload; audit records may not carry audio"
         raise ValueError(msg)
 
     # numpy is not imported here. Duck-typing on ``ndim`` covers arrays without
@@ -524,6 +521,4 @@ def _is_long_numeric_sequence(value: object) -> bool:
     """Whether ``value`` is a long flat sequence of numbers."""
     if not isinstance(value, (list, tuple)) or len(value) <= _MAX_SCALAR_SEQUENCE:
         return False
-    return all(
-        isinstance(item, (int, float)) and not isinstance(item, bool) for item in value
-    )
+    return all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)

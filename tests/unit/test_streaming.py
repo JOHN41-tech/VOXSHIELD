@@ -73,7 +73,15 @@ class TestWindowGeometry:
 
         windows = _run(stream, _tone(20.0), size=_SR)
 
-        assert [round(w.start_seconds, 2) for w in windows] == [0.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0]
+        assert [round(w.start_seconds, 2) for w in windows] == [
+            0.0,
+            3.0,
+            6.0,
+            9.0,
+            12.0,
+            15.0,
+            18.0,
+        ]
 
 
 class TestFinalWindow:
@@ -238,9 +246,7 @@ def _batch_features(audio: np.ndarray, config: AudioConfig | None = None) -> np.
     from voxshield.audio.pipeline import prepare
 
     prepared = prepare(b"", config or _FLAT, decoded=_as_decoded(audio))
-    return np.stack(
-        [prepared.segment_features(i) for i in range(len(prepared.segments))]
-    )
+    return np.stack([prepared.segment_features(i) for i in range(len(prepared.segments))])
 
 
 def _as_decoded(audio: np.ndarray):
@@ -270,9 +276,7 @@ class TestEquivalenceWithBatch:
 
         expected = _batch_features(audio)
         assert len(scored) == len(expected)
-        np.testing.assert_allclose(
-            np.stack([w.features for w in scored]), expected, atol=1e-6
-        )
+        np.testing.assert_allclose(np.stack([w.features for w in scored]), expected, atol=1e-6)
 
     def test_streamed_shapes_match_the_offline_shapes(self) -> None:
         audio = _tone(12.0)
@@ -294,9 +298,7 @@ class TestEquivalenceWithBatch:
         windows = _run(StreamingProcessor(_SR, _FLAT, gain_db=gain), audio, size=_SR)
         scored = [w for w in windows if not w.is_final]
 
-        np.testing.assert_allclose(
-            np.stack([w.features for w in scored]), expected, atol=1e-6
-        )
+        np.testing.assert_allclose(np.stack([w.features for w in scored]), expected, atol=1e-6)
 
     def test_a_default_stream_does_not_match_a_normalizing_batch_run(self) -> None:
         """The documented limitation: no global gain, so levels are not equalized.
@@ -321,9 +323,7 @@ class TestEquivalenceWithBatch:
         windows = _run(StreamingProcessor(_SR, _FLAT), audio, size=_SR)
         scored = [w for w in windows if not w.is_final]
 
-        np.testing.assert_allclose(
-            np.stack([w.features for w in scored]), expected, atol=1e-6
-        )
+        np.testing.assert_allclose(np.stack([w.features for w in scored]), expected, atol=1e-6)
 
     def test_the_batch_result_exposes_no_feature_matrix(self) -> None:
         """The result object is metadata-only, so it cannot be logged or shipped."""

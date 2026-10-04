@@ -51,10 +51,7 @@ class TestLogScrubbing:
     def test_sample_rate_not_redacted(self) -> None:
         # Regression guard for over-broad matching.
         assert scrub_mapping({"sample_rate_hz": 16000})["sample_rate_hz"] == 16000
-        assert (
-            scrub_mapping({"source_sample_rate_hz": 44100})["source_sample_rate_hz"]
-            == 44100
-        )
+        assert scrub_mapping({"source_sample_rate_hz": 44100})["source_sample_rate_hz"] == 44100
 
     @pytest.mark.parametrize(
         "key",
@@ -86,9 +83,7 @@ class TestLogScrubbing:
         """Payload names stay redacted even though a neighbouring metric does not."""
         assert scrub_mapping({key: "secret"})[key] == "[redacted]"
 
-    @pytest.mark.parametrize(
-        "value", [b"\x00\x01", bytearray(b"x"), memoryview(b"y")]
-    )
+    @pytest.mark.parametrize("value", [b"\x00\x01", bytearray(b"x"), memoryview(b"y")])
     def test_binary_values_never_survive(self, value) -> None:
         out = scrub_mapping({"benign": value})["benign"]
         assert "redacted" in out

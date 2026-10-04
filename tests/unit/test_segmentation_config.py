@@ -21,8 +21,7 @@ def _windows(seconds: float, config: AudioConfig | None = None) -> list[tuple[in
     signal = _speech(seconds)
     mask = detect_speech(signal, _SR)
     return [
-        (seg.start_sample, seg.end_sample)
-        for seg in segment_speech(signal.size, mask, _SR, config)
+        (seg.start_sample, seg.end_sample) for seg in segment_speech(signal.size, mask, _SR, config)
     ]
 
 
@@ -40,9 +39,7 @@ class TestHop:
         assert len(wider) < len(default)
 
     def test_a_narrower_hop_yields_more_windows(self) -> None:
-        assert len(_windows(12.0, AudioConfig(segment_hop_seconds=0.5))) > len(
-            _windows(12.0)
-        )
+        assert len(_windows(12.0, AudioConfig(segment_hop_seconds=0.5))) > len(_windows(12.0))
 
     def test_hop_is_independent_of_window_size(self) -> None:
         config = AudioConfig(segment_seconds=2.0, max_segment_seconds=2.0)

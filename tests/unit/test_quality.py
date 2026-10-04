@@ -284,14 +284,10 @@ def test_gain_scaling_shifts_levels_but_not_ratios() -> None:
     loud_report = assess_quality(louder, SAMPLE_RATE)
 
     assert loud_report.rms_dbfs == pytest.approx(quiet_report.rms_dbfs + 6.02, abs=0.1)
-    assert loud_report.peak_amplitude == pytest.approx(
-        quiet_report.peak_amplitude * 2.0, rel=0.01
-    )
+    assert loud_report.peak_amplitude == pytest.approx(quiet_report.peak_amplitude * 2.0, rel=0.01)
     assert loud_report.silence_ratio == quiet_report.silence_ratio
     assert loud_report.snr_db == quiet_report.snr_db
-    assert loud_report.crest_factor_db == pytest.approx(
-        quiet_report.crest_factor_db, abs=0.01
-    )
+    assert loud_report.crest_factor_db == pytest.approx(quiet_report.crest_factor_db, abs=0.01)
 
 
 def test_shorter_than_one_analysis_frame_still_reports_a_level() -> None:

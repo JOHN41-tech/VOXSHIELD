@@ -18,6 +18,7 @@ from voxshield.errors import VoxShieldError
 
 __all__ = [
     "AdapterError",
+    "AugmentationError",
     "DatasetBuildError",
     "DatasetConfigError",
     "DatasetLeakageError",
@@ -84,3 +85,14 @@ class QualityGateError(DatasetBuildError):
 
 class ManifestError(VoxShieldError):
     """A manifest is missing, malformed, or would be silently overwritten."""
+
+
+class AugmentationError(VoxShieldError):
+    """An augmentation request could not be honoured as configured.
+
+    Raised instead of quietly applying a different transform than the one asked
+    for. A build that silently substitutes synthetic noise for a missing noise
+    corpus, or skips a codec it cannot implement, reports a result that looks
+    like the configuration it was given but is not -- and the difference only
+    surfaces as an unexplained accuracy gap weeks later.
+    """

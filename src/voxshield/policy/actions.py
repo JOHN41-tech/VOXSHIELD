@@ -32,6 +32,7 @@ __all__ = [
     "minimum_speech_seconds",
 ]
 
+
 # The API is advisory throughout. A detection is a signal for a human or a
 # downstream review step, never a verdict.
 class ActionType(StrEnum):
@@ -148,14 +149,12 @@ def actions_for(
     """
     if not model_version:
         return _no_action(
-            "No model is loaded. VoxShield reports audio quality only and "
-            "recommends no action."
+            "No model is loaded. VoxShield reports audio quality only and recommends no action."
         )
 
     if band is None or band is RiskBand.UNKNOWN:
         return _no_action(
-            "The detector produced no risk band for this clip. No action is "
-            "recommended."
+            "The detector produced no risk band for this clip. No action is recommended."
         )
 
     if speech_seconds < MIN_SPEECH_SECONDS:

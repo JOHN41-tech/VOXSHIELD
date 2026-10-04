@@ -110,9 +110,7 @@ class ProcessResult:
                 "speech_seconds": round(self.speech_seconds, 4),
                 "speech_ratio": round(self.speech_ratio, 4),
                 "n_regions": len(self.regions),
-                "region_bounds": [
-                    [round(r.start_s, 3), round(r.end_s, 3)] for r in self.regions
-                ],
+                "region_bounds": [[round(r.start_s, 3), round(r.end_s, 3)] for r in self.regions],
                 "n_segments": self.n_segments,
                 "n_padded_windows": self.n_padded_windows,
                 "n_features": self.n_features,

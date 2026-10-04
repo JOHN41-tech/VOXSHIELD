@@ -104,9 +104,7 @@ class TestConfigurationIsHonoured:
     def test_the_pad_policy_pads_a_clip_shorter_than_one_window(self) -> None:
         # The tail anchor keeps the last window of a long clip full width, so the
         # policy only has a decision to make for a sub-window recording.
-        result = process_audio(
-            _wav(3.0), config=AudioConfig(short_segment_policy="pad")
-        )
+        result = process_audio(_wav(3.0), config=AudioConfig(short_segment_policy="pad"))
 
         assert result.n_segments == 1
         assert result.n_padded_windows == 1
@@ -115,9 +113,7 @@ class TestConfigurationIsHonoured:
         assert result.feature_shape is not None
 
     def test_the_keep_policy_scores_a_sub_window_clip_at_natural_width(self) -> None:
-        result = process_audio(
-            _wav(3.0), config=AudioConfig(short_segment_policy="keep")
-        )
+        result = process_audio(_wav(3.0), config=AudioConfig(short_segment_policy="keep"))
 
         assert result.n_segments == 1
         assert result.n_padded_windows == 0
@@ -161,9 +157,7 @@ class TestConfigurationIsHonoured:
         with pytest.raises(InsufficientSpeechError) as excinfo:
             process_audio(
                 buffer.getvalue(),
-                config=AudioConfig(
-                    min_segment_seconds=3.0, short_segment_policy="drop"
-                ),
+                config=AudioConfig(min_segment_seconds=3.0, short_segment_policy="drop"),
             )
 
         exc = excinfo.value
@@ -181,9 +175,7 @@ class TestConfigurationIsHonoured:
     def test_no_policy_pads_a_long_clip(self) -> None:
         """The tail anchor means a long clip never needs a padded window."""
         for policy in ("drop", "pad", "keep"):
-            result = process_audio(
-                _wav(9.0), config=AudioConfig(short_segment_policy=policy)
-            )
+            result = process_audio(_wav(9.0), config=AudioConfig(short_segment_policy=policy))
             assert result.n_padded_windows == 0, policy
 
     def test_the_normalization_strategy_is_reported(self) -> None:
@@ -272,8 +264,7 @@ class TestPrivacyBoundary:
         metadata = process_audio(_wav()).metadata()
 
         assert not any(
-            isinstance(v, (np.ndarray, bytes, bytearray, memoryview))
-            for v in metadata.values()
+            isinstance(v, (np.ndarray, bytes, bytearray, memoryview)) for v in metadata.values()
         )
         serialised = json.dumps(metadata)
         assert "ndarray" not in serialised

@@ -56,6 +56,7 @@ def make_entry(
     *,
     path: str = "corpus",
     license_status: str = LICENSE_VERIFIED,
+    license_verified_by: str = "fixture",
     license: str = "CC-BY-4.0",
     enabled: bool = True,
     metadata: dict[str, str] | None = None,
@@ -68,6 +69,7 @@ def make_entry(
         version="1",
         license=license,
         license_status=license_status,
+        license_verified_by=license_verified_by,
         task=task,
         enabled=enabled,
         path=path,
@@ -659,6 +661,7 @@ class TestRegistry:
                     version="1",
                     license="CC-BY-4.0",
                     license_status=LICENSE_VERIFIED,
+                    license_verified_by="fixture",
                     # real_speech data declared as a spoof_detection entry.
                     task="spoof_detection",
                     enabled=True,

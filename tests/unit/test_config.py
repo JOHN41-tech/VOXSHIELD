@@ -115,9 +115,7 @@ class TestEnvironmentLoading:
             monkeypatch.delenv(name, raising=False)
         assert load_audio_config() == AudioConfig()
 
-    def test_reads_deployment_limits(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_reads_deployment_limits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("VOXSHIELD_MAX_UPLOAD_BYTES", "1024")
         monkeypatch.setenv("VOXSHIELD_MAX_DURATION_SECONDS", "12.5")
         monkeypatch.setenv("VOXSHIELD_MIN_SPEECH_SECONDS", "3")
@@ -142,9 +140,7 @@ class TestEnvironmentLoading:
                 load_audio_config()
 
     @pytest.mark.parametrize("raw", ["0", "-5"])
-    def test_non_positive_limit_rejected(
-        self, monkeypatch: pytest.MonkeyPatch, raw: str
-    ) -> None:
+    def test_non_positive_limit_rejected(self, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
         monkeypatch.setenv("VOXSHIELD_MAX_UPLOAD_BYTES", raw)
         with pytest.raises(ValueError, match="must be positive"):
             load_audio_config()
@@ -159,9 +155,7 @@ class TestEnvironmentLoading:
         with pytest.raises(ValueError, match="VOXSHIELD_VAD_FLOOR_DBFS"):
             load_audio_config()
 
-    def test_dsp_parameters_are_not_env_tunable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_dsp_parameters_are_not_env_tunable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Feature parameters are part of the model's input contract. Allowing
         # them to drift per deployment would invalidate stored evaluations.
         monkeypatch.setenv("VOXSHIELD_N_MELS", "40")

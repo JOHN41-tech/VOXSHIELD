@@ -184,9 +184,9 @@ class FeatureConfig:
     """
 
     sample_rate: int = 16_000
-    n_fft: int = 400          # 25 ms window at 16 kHz
+    n_fft: int = 400  # 25 ms window at 16 kHz
     win_length: int = 400
-    hop_length: int = 160     # 10 ms hop
+    hop_length: int = 160  # 10 ms hop
     n_mels: int = 80
     f_min: float = 20.0
     f_max: float = 7_600.0
@@ -247,16 +247,10 @@ class NormalizationConfig:
             )
             raise ValueError(msg)
         if not 0.0 < self.target_peak <= 1.0:
-            msg = (
-                "normalization.target_peak must be within (0, 1], got "
-                f"{self.target_peak!r}"
-            )
+            msg = f"normalization.target_peak must be within (0, 1], got {self.target_peak!r}"
             raise ValueError(msg)
         if not 0.0 < self.peak_ceiling <= 1.0:
-            msg = (
-                "normalization.peak_ceiling must be within (0, 1], got "
-                f"{self.peak_ceiling!r}"
-            )
+            msg = f"normalization.peak_ceiling must be within (0, 1], got {self.peak_ceiling!r}"
             raise ValueError(msg)
         if self.target_peak > self.peak_ceiling:
             msg = (
@@ -266,15 +260,10 @@ class NormalizationConfig:
             )
             raise ValueError(msg)
         if self.max_gain_db <= 0.0:
-            msg = (
-                f"normalization.max_gain_db must be positive, got {self.max_gain_db!r}"
-            )
+            msg = f"normalization.max_gain_db must be positive, got {self.max_gain_db!r}"
             raise ValueError(msg)
         if self.silence_rms < 0.0:
-            msg = (
-                "normalization.silence_rms must be non-negative, got "
-                f"{self.silence_rms!r}"
-            )
+            msg = f"normalization.silence_rms must be non-negative, got {self.silence_rms!r}"
             raise ValueError(msg)
         if not self.enabled and self.strategy != "none":
             # Permitted, but resolved rather than left contradictory: a disabled
@@ -374,7 +363,7 @@ class AudioConfig:
     """
 
     # --- Intake limits -----------------------------------------------------
-    max_upload_bytes: int = 10 * 1024 * 1024      # 10 MiB
+    max_upload_bytes: int = 10 * 1024 * 1024  # 10 MiB
     max_duration_seconds: float = 30.0
     max_channels: int = 8
     # Bounds frames-per-second so that a legal duration at a pathological
@@ -405,17 +394,25 @@ class AudioConfig:
     short_segment_policy: str = "drop"
 
     # --- Allowed containers (allow-list, never a deny-list) ----------------
-    allowed_subtypes: frozenset[str] = field(default_factory=lambda: frozenset({
-        "PCM_16",
-        "PCM_24",
-        "PCM_32",
-        "FLOAT",
-        "DOUBLE",
-    }))
-    allowed_formats: frozenset[str] = field(default_factory=lambda: frozenset({
-        "WAV",
-        "FLAC",
-    }))
+    allowed_subtypes: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "PCM_16",
+                "PCM_24",
+                "PCM_32",
+                "FLOAT",
+                "DOUBLE",
+            }
+        )
+    )
+    allowed_formats: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "WAV",
+                "FLAC",
+            }
+        )
+    )
 
     normalization: NormalizationConfig | None = None
     quality: QualityConfig = field(default_factory=QualityConfig)
@@ -560,9 +557,7 @@ def _env_normalization(default: NormalizationConfig) -> NormalizationConfig | No
         target_rms_dbfs=_env_dbfs(
             "VOXSHIELD_NORMALIZATION_TARGET_RMS_DBFS", default.target_rms_dbfs
         ),
-        peak_ceiling=_env_peak(
-            "VOXSHIELD_NORMALIZATION_PEAK_CEILING", default.peak_ceiling
-        ),
+        peak_ceiling=_env_peak("VOXSHIELD_NORMALIZATION_PEAK_CEILING", default.peak_ceiling),
     )
 
 
@@ -577,9 +572,7 @@ def _env_quality(default: QualityConfig) -> QualityConfig:
     return replace(
         default,
         enabled=_env_bool("VOXSHIELD_QUALITY_ENABLED", default.enabled),
-        silence_dbfs=_env_dbfs(
-            "VOXSHIELD_QUALITY_SILENCE_DBFS", default.silence_dbfs
-        ),
+        silence_dbfs=_env_dbfs("VOXSHIELD_QUALITY_SILENCE_DBFS", default.silence_dbfs),
         min_snr_db=_env_float("VOXSHIELD_QUALITY_MIN_SNR_DB", default.min_snr_db),
     )
 
@@ -594,15 +587,9 @@ def load_audio_config() -> AudioConfig:
     base = AudioConfig()
     vad = replace(
         base.vad,
-        absolute_floor_dbfs=_env_dbfs(
-            "VOXSHIELD_VAD_FLOOR_DBFS", base.vad.absolute_floor_dbfs
-        ),
-        seed_margin_db=_env_float(
-            "VOXSHIELD_VAD_SEED_MARGIN_DB", base.vad.seed_margin_db
-        ),
-        dynamic_range_db=_env_float(
-            "VOXSHIELD_VAD_DYNAMIC_RANGE_DB", base.vad.dynamic_range_db
-        ),
+        absolute_floor_dbfs=_env_dbfs("VOXSHIELD_VAD_FLOOR_DBFS", base.vad.absolute_floor_dbfs),
+        seed_margin_db=_env_float("VOXSHIELD_VAD_SEED_MARGIN_DB", base.vad.seed_margin_db),
+        dynamic_range_db=_env_float("VOXSHIELD_VAD_DYNAMIC_RANGE_DB", base.vad.dynamic_range_db),
         max_spectral_flatness=_env_float(
             "VOXSHIELD_VAD_MAX_FLATNESS", base.vad.max_spectral_flatness
         ),
@@ -613,9 +600,7 @@ def load_audio_config() -> AudioConfig:
         max_duration_seconds=_env_float(
             "VOXSHIELD_MAX_DURATION_SECONDS", base.max_duration_seconds
         ),
-        min_speech_seconds=_env_float(
-            "VOXSHIELD_MIN_SPEECH_SECONDS", base.min_speech_seconds
-        ),
+        min_speech_seconds=_env_float("VOXSHIELD_MIN_SPEECH_SECONDS", base.min_speech_seconds),
         normalization=_env_normalization(base.normalization_settings),
         quality=_env_quality(base.quality),
         segment_hop_seconds=_env_optional_float(
