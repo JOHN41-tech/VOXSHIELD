@@ -1,0 +1,67 @@
+# Phase 3 baseline: pooled MFCC features into an L2 logistic regression.
+#
+# This is the reference baseline. It is deliberately the least powerful model in
+# the phase, because its job is to be unimpeachable rather than good: it converges
+# in seconds, has no stochastic component worth discussing, and produces an
+# interpretable coefficient per MFCC band. If a stronger model does not beat this
+# one by a margin larger than the dev split's own noise, that is the finding.
+#
+# Run with:
+#   voxshield ml train --config configs/ml/mfcc_logreg.yaml
+# There is no corpus in this repository, so the command reports NOT RUN until
+# a manifest with train/dev splits exists.
+
+model_id: mfcc_logreg
+
+features:
+  kind: mfcc
+  n_fft: 400
+  hop_length: 160
+  n_mels: 80
+  fmin: 20.0
+  fmax: 7600.0
+  htk: true
+  n_coefficients: 20
+  # 22 is the classic TIMIT value. It applies cepstral mean normalisation, which
+  # removes the channel effect and with it much of the codec information a
+  # detector could otherwise key on.
+  lifter: 22.0
+  with_delta: false
+  # Pooling needs no fixed frame count; leave the frames at their natural length
+  # and take mean and standard deviation over time.
+  n_frames: null
+  target_frames: null
+
+model:
+  family: mfcc_logreg
+  max_iter: 2000
+  class_weight: balanced
+
+train:
+  seed: 20260928
+  # Ignored by this family, which uses model.max_iter. Present so that all three
+  # recipes share one train block and can be diffed against each other.
+  epochs: 12
+  device: cpu
+  verify_leakage: true
+  min_train_samples: 100
+  min_dev_samples: 50
+
+# EER is chosen on dev and applied to test unchanged. Neither ceiling is set:
+# they are product requirements, and inventing one here would embed an
+# unvalidated risk appetite into the artefact.
+threshold:
+  strategy: eer
+  max_frr: null
+  max_far: null
+
+train_split: train
+dev_split: dev
+test_split: test
+
+output_dir: data/models
+
+notes:
+  - Reference baseline. Report it as the floor, not as a candidate.
+  - Accuracy on pooled MFCCs is expected to be poor on general-purpose TTS
+    corpora; the number's value is that it is cheap and honest.

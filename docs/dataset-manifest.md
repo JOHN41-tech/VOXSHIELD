@@ -11,6 +11,12 @@ No data has been collected. There is no `data/` directory, no download script, a
 no cached artefact. Anyone looking for training data should be told plainly that
 there is none.
 
+The `data/` directory now exists as an empty scaffold of ignored subdirectories,
+and `voxshield ml train` reads its manifest from `data/manifests/all.jsonl`. On a
+fresh checkout that path does not exist, so the command exits `2` and prints a
+`not_run` record. That is the correct behaviour, not a defect to work around; see
+[`docs/phase3-baseline-models.md`](phase3-baseline-models.md).
+
 ## Legal and ethical gate
 
 This is a prerequisite to every row below, not a section to fill in later.

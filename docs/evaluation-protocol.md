@@ -199,5 +199,25 @@ hold. These are the gate, and they are deliberately strict:
 - [ ] A shadow or advisory deployment completed with an analyst reviewing every
       flagged call, before any band reaches a customer-facing surface.
 
+## Implementation
+
+The protocol above is coded, and deliberately so: it is easier to violate a
+document than a guard.
+
+- `src/voxshield/training/runner.py` enforces split discipline. Dev selects the
+  operating point, test is scored once at that threshold, and there is no code
+  path that re-tunes on test.
+- `src/voxshield/data/gates.py` refuses leakage across speaker, parent, session,
+  generator, file hash, and content hash.
+- `src/voxshield/evaluation/report.py` serialises unmeasured work as `NOT RUN`
+  and undefined figures as `NOT AVAILABLE`, so a missing number is visibly
+  missing rather than absent.
+- Sample floors and per-class minimums refuse small splits, because a constant
+  model fitted on four samples still reports confident metrics.
+
+The three baselines to be measured under this protocol, and their method, are in
+[`docs/phase3-baseline-models.md`](phase3-baseline-models.md). Their current
+state is **NOT RUN**: no corpus exists.
+
 Until every box is checked, the correct response from VoxShield remains
 `UNSCORED` — which is exactly what Phase 0 does.

@@ -23,9 +23,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Model + evaluation. torch is required only once a model is actually trained;
-# it is NOT needed to run the API or the preprocessing tests.
+# Model + evaluation. scikit-learn and xgboost back the two MFCC baselines and
+# torch is required only by the CNN, so torch is not needed to run the API or to
+# train the tabular baselines. They belong in this extra rather than in
+# `dependencies` because the API serves UnavailableDetector and imports no
+# model code; pulling a gradient-boosting library onto the serving path would buy
+# nothing and add a version to keep patched.
+#
+# xgboost is floored at 2.1 because the baselines pass early_stopping_rounds to
+# the constructor, which is a 2.x argument; on 1.x it silently trains every round
+# and the run log would claim a selection that never happened.
 ml = [
+    "scikit-learn>=1.5",
+    "xgboost>=2.1",
     "torch>=2.4",
 ]
 api = [

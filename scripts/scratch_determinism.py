@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from scratch_e2e_build import ROOT, generate, harmonic  # noqa: F401
+
 from voxshield.data.build import build_dataset
 from voxshield.data.config import load_data_config
 

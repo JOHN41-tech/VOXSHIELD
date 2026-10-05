@@ -29,6 +29,10 @@ data/synthetic/**
 *.7z
 
 # --- Model artifacts ---------------------------------------------------------
+# Artefact directories carry a metadata.json / state.json alongside the weights,
+# so ignoring the file extensions alone still leaves provenance in `git status`.
+data/models/**
+reports/**
 *.pt
 *.pth
 *.ckpt

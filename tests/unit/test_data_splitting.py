@@ -10,26 +10,30 @@ reports, and an honest fallback when temporal data cannot support the claim.
 from __future__ import annotations
 
 import json
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from voxshield.data.config import SplitConfig
 from voxshield.data.errors import SplitError
+from voxshield.data.labels import BONA_FIDE, SPOOF
 from voxshield.data.schema import UNKNOWN, SourceRecord
 from voxshield.data.splitting import (
+    DEV,
     SPLIT_NAMES,
+    TEST,
     TRAIN,
     assign_splits,
     build_split_report,
     write_split_report,
 )
 
-BONA_FIDE = "bona_fide"
-
 
 def source(
     sample_id: str,
     *,
+    label: str = BONA_FIDE,
     speaker_id: str = UNKNOWN,
     generator_id: str = UNKNOWN,
     channel: str = UNKNOWN,
@@ -42,7 +46,7 @@ def source(
         sample_id=sample_id,
         dataset_id="corpus",
         audio_path=f"raw/{sample_id}.wav",
-        label=BONA_FIDE,
+        label=label,
         speaker_id=speaker_id,
         generator_id=generator_id,
         channel=channel,
@@ -55,6 +59,33 @@ def source(
 def speakers(count: int) -> list[SourceRecord]:
     """``count`` distinct one-file speakers, for exercising whole-group splits."""
     return [source(f"s{i}", speaker_id=f"spk{i}") for i in range(count)]
+
+
+def classes(bona: int, spoof: int, *, size: int = 1) -> list[SourceRecord]:
+    """Two classes as single-class groups of ``size`` sources each.
+
+    One class per group is the case stratification has to get right on its own:
+    every class is separately divisible, so a corpus lopsided *between* classes
+    cannot be excused by indivisibility.
+    """
+    records: list[SourceRecord] = []
+    for label, count in ((BONA_FIDE, bona), (SPOOF, spoof)):
+        for index in range(count):
+            for take in range(size):
+                records.append(
+                    source(
+                        f"{label[0]}{index}_{take}", label=label, speaker_id=f"{label[0]}{index}"
+                    )
+                )
+    return records
+
+
+def mix(records: list[SourceRecord], assignment) -> dict[str, dict[str, int]]:
+    """Per-split label counts, for asserting on class composition."""
+    counts: dict[str, Counter[str]] = {split: Counter() for split in SPLIT_NAMES}
+    for record in records:
+        counts[assignment.splits[record.sample_id]][record.label] += 1
+    return {split: dict(counted) for split, counted in counts.items()}
 
 
 class TestWholeGroupAssignment:
@@ -109,6 +140,138 @@ class TestWholeGroupAssignment:
 
         with pytest.raises(SplitError):
             assign_splits(records, config)
+
+
+class TestClassStratification:
+    """Every split owes each class its share of the corpus, not just its size.
+
+    The failure this prevents is quiet: a capacity fill that hits the size ratios
+    exactly while handing ``dev`` a single class, which is a split that cannot
+    calibrate, cannot pick a threshold, and cannot report a false-positive rate.
+    """
+
+    def test_every_split_receives_both_classes_on_a_lopsided_corpus(self) -> None:
+        records = classes(5, 15)
+        assignment = assign_splits(records, SplitConfig(min_train_speakers=2), seed=7)
+        for split in (DEV, TEST):
+            assert mix(records, assignment)[split].keys() == {BONA_FIDE, SPOOF}, (
+                f"{split} holds {mix(records, assignment)[split]}, so it cannot be "
+                "calibrated or scored for false positives"
+            )
+
+    def test_the_class_mix_tracks_the_corpus_rather_than_the_split_order(self) -> None:
+        records = classes(10, 30)
+        corpus_share = 10 / 40
+        config = SplitConfig(train_ratio=0.6, dev_ratio=0.2, min_train_speakers=2)
+        assignment = assign_splits(records, config, seed=3)
+        for split, counts in mix(records, assignment).items():
+            held = sum(counts.values())
+            assert counts[BONA_FIDE] / held == pytest.approx(corpus_share, abs=0.05), (
+                f"{split} drifted to {counts[BONA_FIDE] / held:.0%} bona fide "
+                f"against a corpus share of {corpus_share:.0%}"
+            )
+
+    def test_stratification_does_not_cost_split_size(self) -> None:
+        """The quota is met by measuring demand in sources, so sizes follow it.
+
+        This is the property that makes the feature free: balancing classes
+        usually means choosing a weight against the size ratios, and here there
+        is no weight because both constraints are the same one summed over
+        classes. If this test fails, the design has grown a tuning knob.
+        """
+        records = classes(12, 36)
+        config = SplitConfig(train_ratio=0.6, dev_ratio=0.2, min_train_speakers=2)
+        assignment = assign_splits(records, config, seed=11)
+        assert len(assignment.ids_for(TRAIN)) / len(records) == pytest.approx(
+            config.train_ratio, abs=0.05
+        )
+
+    def test_groups_stay_whole_under_stratification(self) -> None:
+        records = classes(6, 18, size=3)
+        assignment = assign_splits(records, SplitConfig(min_train_speakers=2), seed=5)
+        seen: dict[str, set[str]] = {}
+        for record in records:
+            seen.setdefault(record.speaker_id or record.sample_id, set()).add(
+                assignment.splits[record.sample_id]
+            )
+        assert all(len(splits) == 1 for splits in seen.values()), "a group was split across sides"
+
+    def test_a_uniform_corpus_is_left_exactly_as_it_was(self) -> None:
+        """With nothing to balance, the fill still has to hit the ratios exactly."""
+        records = speakers(30)
+        assignment = assign_splits(records, SplitConfig(min_train_speakers=2), seed=2)
+        assert {split: len(assignment.ids_for(split)) for split in (TRAIN, DEV, TEST)} == {
+            TRAIN: 21,
+            DEV: 5,
+            TEST: 4,
+        }
+        assert mix(records, assignment)[DEV] == {BONA_FIDE: 5}
+
+    def test_a_split_that_cannot_hold_every_class_says_so(self) -> None:
+        """Too few minority groups is arithmetic, so it must be reported.
+
+        Two spoof groups of three sources cannot be spread over three splits at
+        the requested ratios -- one of them has to go without. Shipping that
+        silently and letting the calibrator divide by zero downstream would be
+        worse than saying it plainly.
+        """
+        records = classes(6, 2, size=3)
+        assignment = assign_splits(records, SplitConfig(min_train_speakers=2), seed=13)
+        assert mix(records, assignment)[DEV].keys() != {BONA_FIDE, SPOOF}
+        assert any("no spoof source" in note and DEV in note for note in assignment.notes), (
+            f"the missing class was not reported: {assignment.notes}"
+        )
+
+    def test_class_mixed_groups_are_placed_whole_and_counted_once(self) -> None:
+        """A group holding both classes belongs to neither, so it is not doubled.
+
+        Counting it under each class would overstate every split, so the reported
+        mix would be a worse lie than reporting nothing.
+        """
+        records: list[SourceRecord] = []
+        for index in range(6):
+            records.append(source(f"mixed{index}", label=BONA_FIDE, speaker_id=f"m{index}"))
+            records.append(source(f"mixed{index}s", label=SPOOF, speaker_id=f"m{index}"))
+        assignment = assign_splits(records, SplitConfig(min_train_speakers=2), seed=17)
+
+        counted = mix(records, assignment)
+        assert sum(sum(counts.values()) for counts in counted.values()) == len(records), (
+            f"a source was lost or counted twice: {counted}"
+        )
+        for index in range(6):
+            halves = {
+                assignment.splits[f"mixed{index}"],
+                assignment.splits[f"mixed{index}s"],
+            }
+            assert len(halves) == 1, f"group m{index} was split across {halves}"
+
+    def test_turning_stratification_off_restores_the_capacity_fill(self) -> None:
+        """The flag has to be able to reproduce the plain size-only fill on demand."""
+        records = classes(5, 15)
+        config = SplitConfig(min_train_speakers=2, stratify_by_label=False)
+        assignment = assign_splits(records, config, seed=7)
+        assert sum(1 for note in assignment.notes if "class mix stratified" in note) == 0
+        # The sizes are the only thing it still promises, and it keeps them.
+        assert len(assignment.ids_for(TRAIN)) / len(records) == pytest.approx(0.7, abs=0.05)
+
+    def test_temporal_ordering_reports_giving_up_stratification(self) -> None:
+        """A chronological boundary and a balanced one are different boundaries."""
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        dated = [
+            source(
+                f"t{index}",
+                label=BONA_FIDE if index % 4 else SPOOF,
+                speaker_id=f"t{index}",
+                recorded_at=(start + timedelta(days=index)).isoformat(),
+            )
+            for index in range(40)
+        ]
+        config = SplitConfig(min_train_speakers=2, partition_by_temporal=True)
+        assignment = assign_splits(dated, config, seed=19)
+        assert any("stratification was not applied" in note for note in assignment.notes), (
+            f"the trade was silent: {assignment.notes}"
+        )
+        assert sum(1 for note in assignment.notes if "class mix stratified" in note) == 0
 
 
 class TestHoldouts:
@@ -170,9 +333,7 @@ class TestChannelAndDeviceDisjointness:
 
         by_channel: dict[str, set[str]] = {}
         for record in records:
-            by_channel.setdefault(record.channel, set()).add(
-                assignment.split_for(record.sample_id)
-            )
+            by_channel.setdefault(record.channel, set()).add(assignment.split_for(record.sample_id))
         assert all(len(splits) == 1 for splits in by_channel.values())
 
     def test_a_speaker_spanning_two_channels_is_merged_not_split(self) -> None:
@@ -190,9 +351,7 @@ class TestChannelAndDeviceDisjointness:
 
         by_device: dict[str, set[str]] = {}
         for record in records:
-            by_device.setdefault(record.device, set()).add(
-                assignment.split_for(record.sample_id)
-            )
+            by_device.setdefault(record.device, set()).add(assignment.split_for(record.sample_id))
         assert all(len(splits) == 1 for splits in by_device.values())
 
     def test_both_axes_together_still_hold(self) -> None:
@@ -248,9 +407,7 @@ class TestChannelAndDeviceDisjointness:
         # weakened rather than broken.
         by_channel: dict[str, set[str]] = {}
         for record in self._corpus():
-            by_channel.setdefault(record.channel, set()).add(
-                assignment.split_for(record.sample_id)
-            )
+            by_channel.setdefault(record.channel, set()).add(assignment.split_for(record.sample_id))
         assert all(len(splits) == 1 for splits in by_channel.values())
 
     def test_the_requirement_is_recorded_in_the_notes(self) -> None:

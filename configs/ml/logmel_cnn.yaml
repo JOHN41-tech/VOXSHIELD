@@ -1,0 +1,79 @@
+# Phase 3 baseline: a small 1-D CNN over log-mel frames.
+#
+# This is the only Phase 3 model that sees the time axis, and the only one that
+# needs PyTorch. It exists to answer a specific question: does local temporal
+# structure in the spectrogram carry spoofing information that mean-and-standard-
+# deviation pooling throws away? If the answer is no, the whole temporal branch of
+# this project can be dropped on the strength of one cheap experiment.
+#
+# It is not expected to win on a small corpus. A CNN has far more parameters than
+# the tabular baselines and will fit a small dev split's noise if allowed to.
+#
+# Run with:
+#   voxshield ml train --config configs/ml/logmel_cnn.yaml
+#
+# The two tabular baselines run without PyTorch installed. This one does not.
+
+model_id: logmel_cnn
+
+features:
+  # Log-mel rather than MFCC: the DCT would discard exactly the frequency detail
+  # a convolutional front end is meant to exploit, and folding 80 bands down to
+  # 20 coefficients before convolving would be a strange way to use a CNN.
+  kind: log_mel
+  n_fft: 400
+  hop_length: 160
+  n_mels: 80
+  fmin: 20.0
+  fmax: 7600.0
+  htk: true
+  # n_coefficients is unused for log_mel but must still be valid, so it is held
+  # at its default rather than set to a sentinel.
+  n_coefficients: 20
+  lifter: 0.0
+  with_delta: false
+  # Fixed frame count: a 1-D conv needs a consistent input length, and padding a
+  # short clip with silence would teach the model that trailing silence means
+  # "bona fide". 300 frames is 3.0 seconds at a 10 ms hop.
+  n_frames: 300
+  target_frames: 300
+
+model:
+  family: logmel_cnn
+  hidden_channels: [32, 64]
+  dropout: 0.2
+  batch_size: 32
+  # Rare spoof classes otherwise get ignored by the loss, and the reported EER is
+  # then a statement about the majority class rather than about detection.
+  class_weight: balanced
+
+train:
+  seed: 20260928
+  epochs: 30
+  device: cpu
+  # Score dev every epoch and keep the best checkpoint, rather than taking the
+  # last epoch. Taking the last epoch is how a CNN ends up reporting its worst
+  # weights as though they were its best.
+  eval_every: 1
+  # Stop after this many epochs without a dev improvement.
+  patience: 8
+  verify_leakage: true
+  min_train_samples: 100
+  min_dev_samples: 50
+
+threshold:
+  strategy: eer
+
+train_split: train
+dev_split: dev
+test_split: test
+
+output_dir: data/models
+
+notes:
+  - Dev checkpoint selection uses dev log loss; the EER threshold is chosen
+    separately, also on dev.
+  - Frame count is fixed, so clip duration is part of the model's input
+    contract. Changing n_frames after training invalidates the saved weights.
+  - Underpowered on small corpora. Report it as a negative result if that is
+    what it is.

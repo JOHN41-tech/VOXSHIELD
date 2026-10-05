@@ -111,9 +111,16 @@ split:
   # rather than producing numbers that look measured.
   min_train_speakers: 2
   streaming_max_sources: 512
+  # On by default. Each split is given its share of every class, not just its
+  # share of the corpus, because a split missing a class cannot be calibrated
+  # and cannot report a false-positive rate. The two constraints turn out to be
+  # the same one summed over classes, so this costs nothing in split size. Set
+  # false only to reproduce the older size-only fill.
+  stratify_by_label: true
   # Off by default: temporal ordering trades label balance for a
   # future-looking evaluation, which is the right call only when the corpus
-  # really does span time.
+  # really does span time. Turning this on switches stratification off rather
+  # than pretending one boundary can be both chronological and balanced.
   partition_by_temporal: false
   min_temporal_coverage: 0.95
   # Off, and staying off until a corpus can support them. docs/dataset-manifest.md

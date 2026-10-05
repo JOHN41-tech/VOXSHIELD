@@ -202,20 +202,31 @@ voxshield/
 │   ├── audio/               # loader · decode · preprocess · quality · vad
 │   │                        # segmentation · features · pipeline · process · streaming
 │   ├── api/                 # FastAPI routes, schemas, error translation
+│   ├── data/                # config · schema · manifest · gates · build · adapters
+│   ├── evaluation/          # metrics · reports · threshold policies
+│   ├── training/            # config · features · datasets · models · artefacts · runner
 │   ├── models/              # detector protocol + UnavailableDetector
 │   ├── policy/              # risk bands and the advisory action ladder
 │   ├── storage/             # metadata-only audit store with retention
 │   ├── monitoring/          # JSON logging with privacy screening
 │   └── config.py
 ├── tests/                   # unit, integration, privacy-boundary
+├── configs/
+│   ├── data.yaml
+│   └── ml/                  # mfcc_logreg · mfcc_xgboost · logmel_cnn recipes
 └── docs/
     ├── architecture.md            # what is actually implemented
     ├── privacy-design.md          # the four privacy guarantees
     ├── threat-model.md            # adversaries, mitigations, accepted risks
     ├── evaluation-protocol.md     # the gate a model must pass
     ├── dataset-manifest.md        # required corpus and provenance schema
+    ├── phase3-baseline-models.md  # the three baselines and their method
     └── decision-log/              # ADR-001, ADR-002
 ```
+
+`voxshield ml train` is implemented and exits `2` with a `not_run` record,
+because no corpus exists. See
+[`docs/phase3-baseline-models.md`](docs/phase3-baseline-models.md).
 
 Not yet created: `sdk/`, `dashboard/`, `services/`. The target architecture in
 section 7 is conceptual; [`docs/architecture.md`](docs/architecture.md) describes

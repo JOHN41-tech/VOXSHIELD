@@ -67,8 +67,7 @@ def _inspect(args: argparse.Namespace) -> int:
     path = args.store or Path(os.environ.get(AUDIT_STORE_ENV, ""))
     if not str(path):
         print(
-            "no audit store configured; set "
-            f"{AUDIT_STORE_ENV} or pass --store",
+            f"no audit store configured; set {AUDIT_STORE_ENV} or pass --store",
             file=sys.stderr,
         )
         return 2
@@ -417,9 +416,7 @@ def _validate_cmd(args: argparse.Namespace) -> int:
                 "accepted_per_dataset": result.stats.accepted_per_dataset,
                 "rejected_per_reason": result.stats.rejected_per_reason,
                 "unavailable_scopes": result.stats.unavailable_scopes,
-                "rejected_samples": [
-                    item.to_dict() for item in result.rejected[: args.limit]
-                ],
+                "rejected_samples": [item.to_dict() for item in result.rejected[: args.limit]],
                 "rejected_truncated": len(result.rejected) > args.limit,
                 "report_path": paths.validation_path(),
             }
@@ -523,9 +520,7 @@ def _inspect_cmd(args: argparse.Namespace) -> int:
         "manifest": str(target),
         "requested_split": args.split,
         "header": manifest.header,
-        "statistics": compute_statistics(
-            rows, dataset_build_id=manifest.header.dataset_build_id
-        ),
+        "statistics": compute_statistics(rows, dataset_build_id=manifest.header.dataset_build_id),
         "retired_rows": len(manifest.retired),
     }
     if args.limit > 0:
@@ -634,8 +629,7 @@ def _test_loader_cmd(args: argparse.Namespace) -> int:
     }
     if args.samples > 0:
         payload["sample_items"] = [
-            _item_summary(dataset[index])
-            for index in range(min(args.samples, len(dataset)))
+            _item_summary(dataset[index]) for index in range(min(args.samples, len(dataset)))
         ]
     _emit(jsonable(payload), compact=args.compact)
     return DATA_OK if summary.get("ok") else DATA_FAILED
@@ -718,6 +712,7 @@ def build_parser() -> argparse.ArgumentParser:
     process.set_defaults(func=_process)
 
     _add_data_parser(sub)
+    _add_ml_parser(sub)
 
     return parser
 
@@ -749,10 +744,7 @@ def _add_data_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -
         parser.add_argument(
             "--root",
             default=None,
-            help=(
-                "Data root directory. Overrides VOXSHIELD_DATA_ROOT and the "
-                "configured root."
-            ),
+            help=("Data root directory. Overrides VOXSHIELD_DATA_ROOT and the configured root."),
         )
         parser.add_argument(
             "--compact",
@@ -910,6 +902,327 @@ def _add_data_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -
         help="Number of individual items to describe (default 0).",
     )
     loader.set_defaults(func=_test_loader_cmd, dispatch=_dispatch_data)
+
+
+# ---------------------------------------------------------------------------
+# Training commands
+# ---------------------------------------------------------------------------
+
+#: A run produced a measured report. The numbers exist.
+ML_MEASURED = 0
+#: A run started and could not finish. Something is wrong with the code or data.
+ML_FAILED = 1
+#: Nothing ran, and nothing could have. No corpus, a dry run, or an unrequested
+#: test evaluation. Distinct from ``ML_FAILED`` so a pipeline does not record a
+#: broken pipeline when the honest answer is an absent dataset.
+ML_CANNOT_RUN = 2
+
+
+def _dispatch_ml(args: argparse.Namespace) -> int:
+    """Run one ``ml`` subcommand and map its outcome to an exit code.
+
+    The exit code carries the distinction the whole phase turns on: ``0`` means a
+    number was produced, ``2`` means none was and none could have been. A CI
+    script that treats ``1`` and ``2`` alike will eventually report a corpus
+    problem as a code defect.
+
+    Args:
+        args: Parsed arguments, with ``func`` set to the specific handler.
+
+    Returns:
+        The handler's exit code.
+    """
+    try:
+        return int(args.func(args))
+    except Exception as exc:
+        category = "training"
+        if args.command == "ml":
+            category = f"ml {getattr(args, 'ml_command', '?')}"
+        return _data_failure(ML_FAILED, category, exc)
+
+
+def _ml_train_cmd(args: argparse.Namespace) -> int:
+    """Train one baseline and print its run record.
+
+    Reports NOT RUN rather than failing when there is nothing to train on, which
+    is this repository's actual state. Both an absent manifest and a manifest
+    with no rows produce the same well-formed record and the same exit code, so a
+    pipeline can tell "no corpus" from "broken code" without reading stderr.
+    """
+    from voxshield.data.build import jsonable
+    from voxshield.data.errors import VoxShieldError
+    from voxshield.data.manifest import read_manifest
+    from voxshield.training.config import load_training_config
+    from voxshield.training.runner import RunOutcome, not_run_result, run_baseline
+
+    config = load_training_config(args.config)
+
+    try:
+        manifest = read_manifest(args.manifest)
+    except VoxShieldError as exc:
+        # A missing or uninterpretable manifest is "could not run", not "failed".
+        result = not_run_result(
+            f"no usable manifest at {args.manifest} ({exc}). "
+            "This project ships no training corpus.",
+            config=config,
+        )
+        _emit(jsonable(result.to_dict()), compact=args.compact)
+        return ML_CANNOT_RUN
+
+    result = run_baseline(
+        config,
+        manifest,
+        root=args.root or config.output_dir,
+        dry_run=args.dry_run,
+        time_inference=args.time,
+        evaluate_test=not args.no_test,
+        max_items=args.max_items,
+    )
+
+    payload = jsonable(result.to_dict())
+    _emit(payload, compact=args.compact)
+
+    if args.record_dir:
+        path = result.write(args.record_dir)
+        print(f"run record: {path}", file=sys.stderr)
+
+    if result.outcome is RunOutcome.MEASURED:
+        return ML_MEASURED
+    if result.outcome is RunOutcome.FAILED:
+        return ML_FAILED
+    return ML_CANNOT_RUN
+
+
+def _ml_evaluate_cmd(args: argparse.Namespace) -> int:
+    """Score a split with a saved artefact, without refitting."""
+    from voxshield.data.build import jsonable
+    from voxshield.data.manifest import read_manifest
+    from voxshield.training.runner import RunOutcome, run_from_artifact
+
+    manifest = read_manifest(args.manifest)
+    result = run_from_artifact(
+        args.artifact,
+        manifest,
+        root=args.root,
+        split=args.split,
+        time_inference=args.time,
+    )
+    _emit(jsonable(result.to_dict()), compact=args.compact)
+
+    if result.outcome is RunOutcome.MEASURED:
+        return ML_MEASURED
+    if result.outcome is RunOutcome.FAILED:
+        return ML_FAILED
+    return ML_CANNOT_RUN
+
+
+def _ml_models_cmd(args: argparse.Namespace) -> int:
+    """List what has actually been trained, or resolve one model in detail.
+
+    Existence is reported separately from usability, so an empty root is a
+    measured fact about this machine rather than an error. That distinction is
+    the whole reason the registry exists: "no models here" and "the model you
+    asked for is not here" need different responses from whoever is looking.
+    """
+    from voxshield.data.build import jsonable
+    from voxshield.training.registry import ModelRegistry, ModelRegistryError
+
+    registry = ModelRegistry.discover(args.root)
+
+    if args.resolve:
+        try:
+            entry = registry.get(args.resolve)
+        except ModelRegistryError as exc:
+            _emit(
+                jsonable(
+                    {
+                        "status": "not_found",
+                        "model_id": args.resolve,
+                        "reason": str(exc),
+                        "available": [item.model_id for item in registry],
+                    }
+                ),
+                compact=args.compact,
+            )
+            return ML_CANNOT_RUN
+        _emit(jsonable({"status": "found", **entry.to_dict()}), compact=args.compact)
+        return ML_MEASURED
+
+    report = registry.report()
+    report["status"] = "measured"
+    if not registry:
+        # An empty registry is measured, not failed: nothing is wrong, there is
+        # simply nothing here. Exit 0 so a pipeline can proceed.
+        report["reason"] = "no trained baselines found under this root"
+    _emit(jsonable(report), compact=args.compact)
+    return ML_MEASURED
+
+
+def _ml_config_cmd(args: argparse.Namespace) -> int:
+    """Validate a recipe and print its identity without touching any audio.
+
+    Cheap enough to run in a pre-commit hook, which is the point: a recipe that
+    does not parse should fail before a training run is attempted.
+    """
+    from voxshield.data.build import jsonable
+    from voxshield.training.config import load_training_config
+
+    config = load_training_config(args.config)
+    _emit(
+        jsonable(
+            {
+                "config_path": str(args.config),
+                "model_id": config.model_id,
+                "family": config.model.family,
+                "config_hash": config.config_hash(),
+                "content_fingerprint": config.content_fingerprint(),
+                "features": config.features.to_dict(),
+                "model": config.model.to_dict(),
+                "train": config.train.to_dict(),
+                "threshold": config.threshold.to_dict(),
+                "splits": {
+                    "train": config.train_split,
+                    "dev": config.dev_split,
+                    "test": config.test_split,
+                },
+                "output_dir": str(config.output_dir),
+                "notes": list(config.notes),
+            }
+        ),
+        compact=args.compact,
+    )
+    return ML_MEASURED
+
+
+def _add_ml_parser(sub: Any) -> None:
+    """Register the ``ml`` command group.
+
+    Args:
+        sub: The top-level subparser action.
+    """
+    ml = sub.add_parser(
+        "ml",
+        help="Train and evaluate the Phase 3 baselines.",
+        description=(
+            "Training commands. Each prints one JSON record on stdout and exits "
+            "0 for a measured result, 1 for a failed run, and 2 for a run that "
+            "could not happen. This repository ships no corpus, so an untrained "
+            "checkout exits 2 and says NOT RUN rather than inventing a number."
+        ),
+    )
+    ml_sub = ml.add_subparsers(dest="ml_command", required=True)
+
+    train = ml_sub.add_parser(
+        "train",
+        help="Fit one baseline and evaluate it under the protocol.",
+        description=(
+            "Fits on train, selects on dev, then scores test exactly once at the "
+            "threshold dev chose."
+        ),
+    )
+    train.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/ml/mfcc_logreg.yaml"),
+        help="Training recipe (default configs/ml/mfcc_logreg.yaml).",
+    )
+    train.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path("data/manifests/all.jsonl"),
+        help="Manifest holding the train, dev, and test splits.",
+    )
+    train.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Data root for relative audio paths. Defaults to output_dir.",
+    )
+    train.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve and featurise the splits, then stop. Fits nothing.",
+    )
+    train.add_argument(
+        "--time",
+        action="store_true",
+        help="Record per-call latency. Roughly triples run cost.",
+    )
+    train.add_argument(
+        "--no-test",
+        action="store_true",
+        help="Stop after the dev report, leaving the test split unread.",
+    )
+    train.add_argument(
+        "--max-items",
+        type=int,
+        default=None,
+        help="Cap rows per split, for smoke runs.",
+    )
+    train.add_argument(
+        "--record-dir",
+        type=Path,
+        default=None,
+        help="Directory for the run record, in addition to stdout.",
+    )
+    train.add_argument(
+        "--compact",
+        action="store_true",
+        help="Print one line of JSON instead of indented JSON.",
+    )
+    train.set_defaults(func=_ml_train_cmd, dispatch=_dispatch_ml)
+
+    evaluate = ml_sub.add_parser(
+        "evaluate",
+        help="Score a split using a saved artefact.",
+    )
+    evaluate.add_argument("--artifact", type=Path, required=True, help="Artefact directory.")
+    evaluate.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/all.jsonl"), help="Manifest path."
+    )
+    evaluate.add_argument(
+        "--root", type=Path, default=Path("."), help="Data root for relative audio paths."
+    )
+    evaluate.add_argument("--split", default="test", help="Split to score (default test).")
+    evaluate.add_argument("--time", action="store_true", help="Record per-call latency.")
+    evaluate.add_argument(
+        "--compact", action="store_true", help="Print one line of JSON instead of indented JSON."
+    )
+    evaluate.set_defaults(func=_ml_evaluate_cmd, dispatch=_dispatch_ml)
+
+    config_cmd = ml_sub.add_parser(
+        "config",
+        help="Validate a recipe and print its identity. Decodes no audio.",
+    )
+    config_cmd.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/ml/mfcc_logreg.yaml"),
+        help="Training recipe to validate.",
+    )
+    config_cmd.add_argument(
+        "--compact", action="store_true", help="Print one line of JSON instead of indented JSON."
+    )
+    config_cmd.set_defaults(func=_ml_config_cmd, dispatch=_dispatch_ml)
+
+    models_cmd = ml_sub.add_parser(
+        "models",
+        help="List trained baselines found under an artefact root.",
+    )
+    models_cmd.add_argument(
+        "--root",
+        type=Path,
+        default=Path("data/models"),
+        help="Directory whose subdirectories are artefacts.",
+    )
+    models_cmd.add_argument(
+        "--resolve",
+        help="Print one model in detail, including its calibration and threshold.",
+    )
+    models_cmd.add_argument(
+        "--compact", action="store_true", help="Print one line of JSON instead of indented JSON."
+    )
+    models_cmd.set_defaults(func=_ml_models_cmd, dispatch=_dispatch_ml)
 
 
 def main(argv: list[str] | None = None) -> int:

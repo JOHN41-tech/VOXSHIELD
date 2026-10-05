@@ -163,9 +163,16 @@ class SplitConfig:
         streaming_max_sources: Cap on the streaming test's source count. Capped
             because a streaming evaluation replays audio in arrival order and an
             unbounded one turns into an overnight job.
+        stratify_by_label: Give each split its share of every class, so a dev or
+            test split does not end up with one class missing or rare. Quota is
+            per class *and* per split, which is what lets class balance and the
+            size ratio be satisfied by one rule instead of trading off against
+            each other. Off only to reproduce a plain capacity fill.
         partition_by_temporal: Order the main pool by capture date when every
             file has one, oldest to train and newest to test. This trades label
             balance for a genuine future-looking evaluation, so it is opt-in.
+            Stratification is not applied when this is on, because a chronological
+            boundary cannot also be a balanced one.
         min_temporal_coverage: Fraction of files that must carry ``recorded_at``
             for temporal ordering to be used at all.
         require_channel_disjoint: Make the split channel-disjoint, as
@@ -191,6 +198,7 @@ class SplitConfig:
     cross_codec_holdout: tuple[str, ...] = ()
     cross_language_holdout: tuple[str, ...] = ()
     streaming_max_sources: int = 512
+    stratify_by_label: bool = True
     partition_by_temporal: bool = False
     min_temporal_coverage: float = 0.95
     require_channel_disjoint: bool = False
@@ -230,6 +238,7 @@ class SplitConfig:
             "cross_codec_holdout": list(self.cross_codec_holdout),
             "cross_language_holdout": list(self.cross_language_holdout),
             "streaming_max_sources": self.streaming_max_sources,
+            "stratify_by_label": self.stratify_by_label,
             "partition_by_temporal": self.partition_by_temporal,
             "min_temporal_coverage": self.min_temporal_coverage,
             "require_channel_disjoint": self.require_channel_disjoint,

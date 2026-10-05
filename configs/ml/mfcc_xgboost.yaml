@@ -1,0 +1,64 @@
+# Phase 3 baseline: pooled MFCC features into gradient-boosted trees.
+#
+# Same front end as the logistic regression, so any difference in the results is
+# attributable to the classifier rather than to the features. That comparability
+# is the reason these two recipes share one FeatureSpec.
+#
+# Run with:
+#   voxshield ml train --config configs/ml/mfcc_xgboost.yaml
+
+model_id: mfcc_xgboost
+
+features:
+  kind: mfcc
+  n_fft: 400
+  hop_length: 160
+  n_mels: 80
+  fmin: 20.0
+  fmax: 7600.0
+  htk: true
+  n_coefficients: 20
+  lifter: 22.0
+  # Deltas stay OFF so that this FeatureSpec is byte-identical to the logistic
+  # recipe's. Trees could well exploit the transition structure that a linear
+  # model over pooled coefficients cannot, and that is a real advantage worth
+  # measuring -- but measuring it requires changing one variable at a time. A
+  # delta-augmented tree model is a separate experiment, not this baseline.
+  with_delta: false
+  n_frames: null
+  target_frames: null
+
+model:
+  family: mfcc_xgboost
+  max_iter: 600
+  learning_rate: 0.08
+  max_depth: 5
+  subsample: 0.9
+  colsample: 0.9
+  reg_lambda: 1.0
+  # Early stopping is configured by the runner, not here: it needs a dev split,
+  # and a value in this file would be ignored whenever dev is absent. Rounds are
+  # capped generously and stopped by dev log loss.
+
+train:
+  seed: 20260928
+  epochs: 12
+  device: cpu
+  verify_leakage: true
+  min_train_samples: 100
+  min_dev_samples: 50
+
+threshold:
+  strategy: eer
+
+train_split: train
+dev_split: dev
+test_split: test
+
+output_dir: data/models
+
+notes:
+  - The FeatureSpec here is identical to mfcc_logreg's, so the difference
+    between the two results is attributable to the classifier alone.
+  - Tree models can latch onto speaker or codec structure. That is precisely what
+    the leakage gate is for; do not disable verify_leakage to get a number.

@@ -254,7 +254,17 @@ def brief(label: str, argv: list[str], *, expect: int = 0) -> None:
         print(f"    stderr: {err.strip()[:400]}")
     try:
         build = json.loads(out)["build"]
-        summary = {key: build[key] for key in ("build_id", "rows", "cache_hits", "elapsed_seconds", "real_time_factor", "gates_passed")}
+        summary = {
+            key: build[key]
+            for key in (
+                "build_id",
+                "rows",
+                "cache_hits",
+                "elapsed_seconds",
+                "real_time_factor",
+                "gates_passed",
+            )
+        }
     except (json.JSONDecodeError, KeyError) as exc:
         print(f"    could not read build report: {exc}")
         return
@@ -284,7 +294,11 @@ def main() -> int:
     config.write_text(CONFIG, encoding="utf-8")
 
     common = ["--config", str(config)]
-    show("paths", ["data", "paths", *common], keys=("config_source", "dataset_build_id", "cache_enabled"))
+    show(
+        "paths",
+        ["data", "paths", *common],
+        keys=("config_source", "dataset_build_id", "cache_enabled"),
+    )
     show(
         "discover",
         ["data", "discover", *common],
@@ -304,7 +318,11 @@ def main() -> int:
     brief("build (warm: should hit cache)", ["data", "build", *common])
 
     show("inspect all", ["data", "inspect", *common], keys=("retired_rows",))
-    show("inspect train", ["data", "inspect", *common, "--split", "train", "--limit", "2"], keys=("requested_split", "retired_rows"))
+    show(
+        "inspect train",
+        ["data", "inspect", *common, "--split", "train", "--limit", "2"],
+        keys=("requested_split", "retired_rows"),
+    )
     show(
         "check-leakage",
         ["data", "check-leakage", *common],
@@ -321,7 +339,19 @@ def main() -> int:
     )
     show(
         "test-loader train",
-        ["data", "test-loader", *common, "--split", "train", "--batch-size", "4", "--batches", "3", "--samples", "1"],
+        [
+            "data",
+            "test-loader",
+            *common,
+            "--split",
+            "train",
+            "--batch-size",
+            "4",
+            "--batches",
+            "3",
+            "--samples",
+            "1",
+        ],
         keys=("split", "row_count", "label_counts", "augmentation", "ok", "reason"),
     )
     show(
@@ -331,7 +361,11 @@ def main() -> int:
     )
 
     print("\n--- negative cases ---")
-    show("no manifest for this root", ["data", "inspect", *common, "--root", str(ROOT / "empty")], expect=2)
+    show(
+        "no manifest for this root",
+        ["data", "inspect", *common, "--root", str(ROOT / "empty")],
+        expect=2,
+    )
     show("bad config path", ["data", "paths", "--config", str(ROOT / "nope.yaml")], expect=2)
     show("bad split", ["data", "inspect", *common, "--split", "bogus"], expect=2)
     show(

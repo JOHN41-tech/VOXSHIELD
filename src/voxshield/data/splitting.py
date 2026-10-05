@@ -26,6 +26,13 @@ The ordering rule, restated here because it is load-bearing:
   :mod:`voxshield.data.leakage` applies when it verifies the result.
 * **Segments inherit.** :mod:`voxshield.data.preprocess` refuses to run without
   this mapping, so no later step can silently move a test window into training.
+* **Class mix is a quota, not an accident.** Each split is owed its ratio of every
+  class, and the placement meets those demands. Meeting the per-class quota
+  automatically meets the size quota -- the two are the same constraint summed
+  over classes -- so balancing the classes costs nothing in split size and needs
+  no tunable weight between them. Without it a capacity fill on a lopsided corpus
+  hands ``dev`` a single class, and a single-class split cannot calibrate or
+  report a false-positive rate.
 * **Holdouts take precedence.** A file whose published metadata lands it in a
   ``cross_*_holdout`` goes to ``test`` before any ratio arithmetic runs, because
   reserving those files *is* the point of the holdout. A file with the metadata
@@ -37,7 +44,10 @@ The ordering rule, restated here because it is load-bearing:
 * **Temporal is opt-in and honest.** Ordering the pool oldest-to-newest makes a
   genuinely future-looking evaluation, but only when nearly every file carries a
   capture date; below ``min_temporal_coverage`` the split quietly falls back to
-  the seeded random order and says so in :attr:`SplitAssignment.notes`.
+  the seeded random order and says so in :attr:`SplitAssignment.notes`. A
+  chronological boundary and a balanced one are different boundaries, so asking
+  for temporal ordering switches stratification off rather than pretending to
+  deliver both.
 """
 
 from __future__ import annotations
@@ -226,6 +236,141 @@ def _components(
     return sorted(components, key=lambda entry: entry[0])
 
 
+def _class_of(members: Sequence[SourceRecord]) -> str | None:
+    """The single class a group belongs to, or ``None`` when it spans classes.
+
+    A group that carries both bona fide and spoof recordings is not a member of
+    either class, and reporting it as one would be a lie in the per-class counts.
+    """
+    labels = {record.label for record in members}
+    return labels.pop() if len(labels) == 1 else None
+
+
+def _stratified_placement(
+    groups: Sequence[tuple[str, list[SourceRecord]]],
+    config: SplitConfig,
+    rng: random.Random,
+) -> dict[str, str]:
+    """Allocate whole groups so every split gets its share of every class.
+
+    Each split owes ``corpus_class_count * ratio`` sources of each class. The
+    greedy pick is the split with the largest unmet demand, measured in sources
+    rather than as a proportion: demand in sources keeps the big split filling
+    first, so ``dev`` does not swallow the corpus while train is still empty.
+
+    One demand vector is enough, because the per-class quotas sum to the size
+    quota. Satisfying each class's share necessarily satisfies the split sizes,
+    which is why this needs no weight to trade class balance against size --
+    the naive alternative does, and the constant chosen for it is arbitrary.
+
+    Groups are indivisible, so a quota is approached from above: a split receives
+    a group whole or misses it entirely. Class-mixed groups are placed last,
+    once the single-class groups have claimed what they can, because they cannot
+    be matched to a per-class quota at all.
+    """
+    labels = sorted({record.label for _, members in groups for record in members})
+    corpus_counts = {
+        label: sum(1 for _, members in groups for record in members if record.label == label)
+        for label in labels
+    }
+    total = sum(corpus_counts.values())
+    ratios = {
+        TRAIN: config.train_ratio,
+        DEV: config.dev_ratio,
+        TEST: 1.0 - config.train_ratio - config.dev_ratio,
+    }
+    demand = {
+        split: {label: corpus_counts[label] * ratios[split] for label in labels}
+        for split in SPLIT_NAMES
+    }
+    size_demand = {split: total * ratios[split] for split in SPLIT_NAMES}
+
+    homogeneous: dict[str, list[tuple[str, list[SourceRecord]]]] = defaultdict(list)
+    mixed: list[tuple[str, list[SourceRecord]]] = []
+    for group in groups:
+        label = _class_of(group[1])
+        (mixed if label is None else homogeneous[label]).append(group)
+
+    placement: dict[str, str] = {}
+    for label in sorted(homogeneous):
+        queue = list(homogeneous[label])
+        rng.shuffle(queue)
+        for group_key, members in queue:
+            _place_group(group_key, members, demand, size_demand, placement)
+    for group_key, members in mixed:
+        _place_group(group_key, members, demand, size_demand, placement)
+
+    return placement
+
+
+def _place_group(
+    group_key: str,
+    members: Sequence[SourceRecord],
+    demand: dict[str, dict[str, float]],
+    size_demand: dict[str, float],
+    placement: dict[str, str],
+) -> None:
+    """Send one group to the split that owes the most, and debit what it takes."""
+    labels = sorted({record.label for record in members})
+    size = len(members)
+    split = max(
+        SPLIT_NAMES,
+        key=lambda candidate: (
+            round(sum(max(demand[candidate][label], 0.0) for label in labels), 9),
+            round(size_demand[candidate], 9),
+            -SPLIT_NAMES.index(candidate),
+        ),
+    )
+    placement[group_key] = split
+    for label in labels:
+        demand[split][label] -= sum(1 for record in members if record.label == label)
+    size_demand[split] -= size
+
+
+def _balance_notes(
+    placement: Mapping[str, str],
+    by_label: Mapping[str, list[SourceRecord]],
+    main_pool: Sequence[SourceRecord],
+    config: SplitConfig,
+) -> list[str]:
+    """Report class mix per split, and name any split that lost a class entirely.
+
+    A split missing one class cannot calibrate, cannot pick a threshold, and
+    cannot produce an error rate, so it is recorded rather than left for the next
+    stage to discover as a division by zero.
+    """
+    notes: list[str] = []
+    mix: dict[str, dict[str, int]] = {split: defaultdict(int) for split in SPLIT_NAMES}
+    for group_key, split in placement.items():
+        for record in by_label[group_key]:
+            mix[split][record.label] += 1
+
+    corpus: dict[str, int] = defaultdict(int)
+    for record in main_pool:
+        corpus[record.label] += 1
+
+    described = {
+        split: ", ".join(f"{count} {label}" for label, count in sorted(mix[split].items()) if count)
+        for split in SPLIT_NAMES
+    }
+    notes.append(
+        f"class mix stratified by quota (train={config.train_ratio:g}, "
+        f"dev={config.dev_ratio:g}): "
+        + "; ".join(f"{split} {{{described[split] or 'empty'}}}" for split in SPLIT_NAMES)
+    )
+
+    for label in sorted(corpus):
+        absent = [split for split in SPLIT_NAMES if not mix[split][label]]
+        if absent:
+            notes.append(
+                f"the {absent} split(s) received no {label} source. The corpus holds "
+                f"{corpus[label]} and groups are indivisible, so this is a corpus-size "
+                f"limit rather than a partition choice; a {label}-free split cannot "
+                "calibrate or report a false-positive rate"
+            )
+    return notes
+
+
 def assign_splits(
     records: Iterable[SourceRecord],
     config: SplitConfig | None = None,
@@ -349,6 +494,17 @@ def assign_splits(
 
     # Deterministic shuffle. A seeded PRNG is exactly what a reproducible split
     # needs; cryptographic strength would be worse here (it cannot be seeded).
+    # Stratification and chronological ordering ask for opposite things, so only
+    # one of them can hold. Chronology is a stronger claim when it is available
+    # and it is opt-in, so it wins and the trade is recorded rather than silent.
+    stratify = cfg.stratify_by_label and not temporal
+    if cfg.stratify_by_label and temporal:
+        notes.append(
+            "label stratification was not applied: the split is ordered by "
+            "recorded_at, so its class mix follows the corpus's own drift over "
+            "time rather than the requested ratios"
+        )
+
     rng = random.Random(seed)  # noqa: S311
     if temporal:
         ordered = sorted(
@@ -366,33 +522,59 @@ def assign_splits(
         ordered = list(groups)
         rng.shuffle(ordered)
 
-    # 3. Greedy group fill by remaining capacity, in split order. The index is
-    # monotonic: once train is at capacity we move to dev, once dev is full we
-    # move to test, and test takes the remainder -- which sums to zero over the
-    # whole pool, so nothing is ever left over or duplicated.
-    n_main = len(main_pool)
-    train_target = round(n_main * cfg.train_ratio)
-    dev_target = round(n_main * cfg.dev_ratio)
-    remaining = {TRAIN: train_target, DEV: dev_target, TEST: n_main - train_target - dev_target}
-    open_index = 0
+    # 3. Place the groups. Two strategies, chosen above.
+    #
+    # The capacity fill is a monotonic pass in split order: once train is at
+    # capacity we move to dev, once dev is full we move to test, and test takes
+    # the remainder -- which sums to zero over the whole pool, so nothing is ever
+    # left over or duplicated. It gets the *sizes* right and says nothing about
+    # class mix, which is why a capacity fill on a 5:15 corpus can hand dev three
+    # spoof groups and no bona ones.
+    #
+    # The stratified fill allocates a per-class quota instead, which fixes the mix
+    # without giving up the sizes.
+    #
+    # A group holding a holdout source is resolved first and identically either
+    # way: the holdout promised that speaker would not train, so promoting the rest
+    # of the group would train on the very speaker the holdout excludes, and the
+    # whole group joins test instead. Those groups are then out of the pool the
+    # quota arithmetic divides, since their placement is already decided.
     promoted: list[str] = []
+    available: list[tuple[str, list[SourceRecord]]] = []
     for group_key, members in ordered:
         if group_splits.get(group_key) == TEST:
-            # A group holding a reserved source stays reserved. The holdout
-            # promised that speaker would not train; promoting the rest of the
-            # group would train on the speaker the holdout exists to exclude, so
-            # the whole group joins the test split instead.
             for record in members:
                 splits.setdefault(record.sample_id, TEST)
             promoted.append(group_key)
             continue
-        while open_index < 2 and remaining[SPLIT_NAMES[open_index]] <= 0:
-            open_index += 1
-        split = SPLIT_NAMES[open_index]
-        remaining[split] -= len(members)
+        available.append((group_key, members))
+
+    placement: dict[str, str]
+    if stratify:
+        placement = _stratified_placement(available, cfg, rng)
+    else:
+        n_main = len(main_pool)
+        remaining = {
+            TRAIN: round(n_main * cfg.train_ratio),
+            DEV: round(n_main * cfg.dev_ratio),
+            TEST: n_main - round(n_main * cfg.train_ratio) - round(n_main * cfg.dev_ratio),
+        }
+        open_index = 0
+        placement = {}
+        for group_key, members in available:
+            while open_index < 2 and remaining[SPLIT_NAMES[open_index]] <= 0:
+                open_index += 1
+            split = SPLIT_NAMES[open_index]
+            remaining[split] -= len(members)
+            placement[group_key] = split
+
+    for group_key, split in placement.items():
         group_splits[group_key] = split
-        for record in members:
+        for record in by_label[group_key]:
             splits[record.sample_id] = split
+
+    if stratify:
+        notes.extend(_balance_notes(placement, by_label, main_pool, cfg))
     if promoted:
         axes = ", ".join(sorted({pinned_by[key] for key in promoted if key in pinned_by}))
         notes.append(
