@@ -90,14 +90,15 @@ def make_config(
         min_dev_samples=10,
         **{"verify_leakage": False, **train_overrides},
     )
+    matrix_family = family in {"logmel_cnn", "logmel_crnn"}
     return TrainingConfig(
         model_id=family,
         features=FeatureSpec(
-            kind="log_mel" if family == "logmel_cnn" else "mfcc",
+            kind="log_mel" if matrix_family else "mfcc",
             n_mels=N_BANDS,
             n_coefficients=6,
-            n_frames=N_FRAMES if family == "logmel_cnn" else None,
-            target_frames=N_FRAMES if family == "logmel_cnn" else None,
+            n_frames=N_FRAMES if matrix_family else None,
+            target_frames=N_FRAMES if matrix_family else None,
         ),
         model=ModelSpec(family=family, max_iter=20, batch_size=16),
         train=train,
@@ -108,7 +109,7 @@ def make_config(
 
 def fit_model(config: TrainingConfig, train: FeatureMatrix, dev: FeatureMatrix) -> tuple[Any, Any]:
     """Fit one baseline and return it with its summary."""
-    want = config.model.family == "logmel_cnn"
+    want = config.model.uses_matrices
     model = build_baseline(
         config.model,
         n_frames=N_FRAMES if want else None,
@@ -126,11 +127,14 @@ def fit_model(config: TrainingConfig, train: FeatureMatrix, dev: FeatureMatrix) 
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("family", ["mfcc_logreg", "mfcc_xgboost", "logmel_cnn"])
+@pytest.mark.parametrize(
+    "family", ["mfcc_logreg", "mfcc_xgboost", "logmel_cnn", "logmel_crnn"]
+)
 def test_artifact_round_trip_reproduces_scores(tmp_path: Path, family: str) -> None:
-    train = make_matrix("train", 60, matrices=family == "logmel_cnn")
-    dev = make_matrix("dev", 20, matrices=family == "logmel_cnn")
-    test = make_matrix("test", 20, matrices=family == "logmel_cnn", seed=99)
+    wants_matrices = family in {"logmel_cnn", "logmel_crnn"}
+    train = make_matrix("train", 60, matrices=wants_matrices)
+    dev = make_matrix("dev", 20, matrices=wants_matrices)
+    test = make_matrix("test", 20, matrices=wants_matrices, seed=99)
 
     config = make_config(tmp_path, family)
     model, summary = fit_model(config, train, dev)
@@ -140,8 +144,8 @@ def test_artifact_round_trip_reproduces_scores(tmp_path: Path, family: str) -> N
         family=family,
         config_hash=config.config_hash(),
         n_features=int(train.vectors.shape[1]),
-        n_frames=N_FRAMES if family == "logmel_cnn" else None,
-        n_bands=N_BANDS if family == "logmel_cnn" else None,
+        n_frames=N_FRAMES if wants_matrices else None,
+        n_bands=N_BANDS if wants_matrices else None,
         class_counts={"0": 30, "1": 30},
         failed_decodes=({"sample_id": "gone.wav", "reason": "unreadable"},),
         notes=("test note",),
@@ -182,8 +186,81 @@ def test_tabular_artifact_stores_scaler_with_estimator(tmp_path: Path) -> None:
     assert sorted(p.name for p in directory.iterdir()) == ["metadata.json", "model.joblib"]
 
 
-def test_cnn_artifact_records_frame_geometry(tmp_path: Path) -> None:
-    """A CNN cannot be rebuilt without the frame geometry it was fitted on."""
+@pytest.mark.parametrize("family", ["logmel_cnn", "logmel_crnn"])
+def test_torch_artifact_records_architecture_and_frame_geometry(
+    tmp_path: Path, family: str
+) -> None:
+    """A torch model cannot be rebuilt without the shapes its weights were written against."""
+    train = make_matrix("train", 60, matrices=True)
+    dev = make_matrix("dev", 20, matrices=True)
+    config = make_config(tmp_path, family)
+    model, _ = fit_model(config, train, dev)
+
+    metadata = ArtifactMetadata(
+        model_id=family,
+        family=family,
+        n_frames=N_FRAMES,
+        n_bands=N_BANDS,
+    )
+    directory = save_artifact(model, metadata, tmp_path)
+    state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+
+    assert state["n_frames"] == N_FRAMES
+    assert state["n_bands"] == N_BANDS
+    assert (directory / "weights.pt").is_file()
+    # The shape-affecting architecture travels with the weights. Asserting the
+    # exact key set, rather than membership, catches a field silently dropped from
+    # architecture_params: a missing se_reduction would rebuild a differently
+    # shaped network and fail only on load_state_dict, for one family only.
+    assert set(state) == {
+        "n_frames",
+        "n_bands",
+        "hidden_channels",
+        "dropout",
+        "se_reduction",
+        "rnn_hidden",
+    }
+    assert state["hidden_channels"] == list(config.model.hidden_channels)
+
+
+def test_crnn_artefact_rebuilds_the_same_score(tmp_path: Path) -> None:
+    """A CRNN has optional blocks whose sizes must survive the round-trip.
+
+    This is the specific way a naive rebuild goes wrong for this family: it
+    produces a network that loads but has the wrong SE or GRU width, which either
+    fails on ``load_state_dict`` or, if the shapes happen to coincide, scores a
+    different model. The assertion is on the rebuilt network's parameter count and
+    on the scores, so a shape mismatch has nowhere to hide.
+    """
+    train = make_matrix("train", 60, matrices=True)
+    dev = make_matrix("dev", 20, matrices=True)
+    config = make_config(tmp_path, "logmel_crnn")
+    model, _ = fit_model(config, train, dev)
+
+    metadata = ArtifactMetadata(
+        model_id="logmel_crnn",
+        family="logmel_crnn",
+        n_frames=N_FRAMES,
+        n_bands=N_BANDS,
+    )
+    directory = save_artifact(model, metadata, tmp_path)
+    loaded, _ = load_artifact(directory)
+
+    original = sum(p.numel() for p in model._network.parameters())
+    rebuilt = sum(p.numel() for p in loaded._network.parameters())
+    assert rebuilt == original
+    assert scores_match(model, loaded, make_matrix("test", 20, matrices=True, seed=99))
+
+
+def test_legacy_cnn_artefact_without_crnn_keys_still_loads(tmp_path: Path) -> None:
+    """An artefact written before the CRNN fields existed must still load.
+
+    ``state.json`` from the earlier build holds only frame geometry,
+    ``hidden_channels`` and ``dropout``. Dropping ``se_reduction``/``rnn_hidden``
+    from it here reproduces that artefact; the rebuild has to fall back to the
+    defaults the fields were introduced with rather than raising a missing-key
+    error, or every Phase 3 checkpoint becomes unloadable.
+    """
     train = make_matrix("train", 60, matrices=True)
     dev = make_matrix("dev", 20, matrices=True)
     config = make_config(tmp_path, "logmel_cnn")
@@ -196,11 +273,15 @@ def test_cnn_artifact_records_frame_geometry(tmp_path: Path) -> None:
         n_bands=N_BANDS,
     )
     directory = save_artifact(model, metadata, tmp_path)
-    state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+    state_path = directory / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for key in ("se_reduction", "rnn_hidden"):
+        state.pop(key, None)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
 
-    assert state["n_frames"] == N_FRAMES
-    assert state["n_bands"] == N_BANDS
-    assert (directory / "weights.pt").is_file()
+    loaded, _ = load_artifact(directory)
+    assert loaded.fitted
+    assert scores_match(model, loaded, make_matrix("test", 20, matrices=True, seed=99))
 
 
 def test_artifact_records_feature_spec_so_a_consumer_can_reproduce_it(tmp_path: Path) -> None:

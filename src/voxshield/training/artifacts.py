@@ -43,7 +43,12 @@ import numpy as np
 
 from voxshield.evaluation.metrics import ThresholdPolicy
 from voxshield.training.calibration import Calibrator, calibrator_from_dict
-from voxshield.training.config import ModelSpec, TrainingConfig, TrainingError
+from voxshield.training.config import (
+    TORCH_FAMILIES,
+    ModelSpec,
+    TrainingConfig,
+    TrainingError,
+)
 from voxshield.training.datasets import FeatureMatrix
 from voxshield.training.models import BaselineModel, FitSummary
 
@@ -361,8 +366,8 @@ def save_artifact(
 
     family = metadata.family
     try:
-        if family == "logmel_cnn":
-            _save_cnn(model, metadata, directory)
+        if family in TORCH_FAMILIES:
+            _save_torch(model, metadata, directory)
         else:
             _save_sklearn(model, directory)
     except TrainingError:
@@ -402,11 +407,18 @@ def _save_sklearn(model: BaselineModel, directory: Path) -> None:
     joblib.dump({"scaler": scaler, "estimator": estimator}, directory / JOBLIB_NAME)
 
 
-def _save_cnn(model: BaselineModel, metadata: ArtifactMetadata, directory: Path) -> None:
-    """Write the CNN state dict and the architecture needed to rebuild it.
+def _save_torch(model: BaselineModel, metadata: ArtifactMetadata, directory: Path) -> None:
+    """Write a torch state dict and the architecture needed to rebuild it.
+
+    ``state.json`` carries the shape-affecting settings from
+    :meth:`ModelSpec.architecture_params` beside the frame geometry. A state dict
+    is a bag of tensors with no record of the layer shapes they belong to, so the
+    rebuild needs both; recording only ``hidden_channels`` was enough for the CNN
+    and is not enough for the CRNN, whose SE block and GRU sizes also change the
+    shapes.
 
     Args:
-        model: A fitted CNN.
+        model: A fitted torch-family model.
         metadata: Provenance, which carries the frame geometry.
         directory: Destination directory.
 
@@ -423,8 +435,7 @@ def _save_cnn(model: BaselineModel, metadata: ArtifactMetadata, directory: Path)
     state = {
         "n_frames": metadata.n_frames,
         "n_bands": metadata.n_bands,
-        "hidden_channels": list(model.spec.hidden_channels),
-        "dropout": model.spec.dropout,
+        **model.spec.architecture_params(),
     }
     (directory / STATE_NAME).write_text(
         json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -554,8 +565,8 @@ def _rebuild(metadata: ArtifactMetadata, directory: Path) -> BaselineModel:
     spec = _spec_from_metadata(metadata)
     family = metadata.family
 
-    if family == "logmel_cnn":
-        return _rebuild_cnn(spec, metadata, directory)
+    if family in TORCH_FAMILIES:
+        return _rebuild_torch(spec, metadata, directory)
     if family in {"mfcc_logreg", "mfcc_xgboost"}:
         return _rebuild_sklearn(spec, family, directory)
 
@@ -566,9 +577,12 @@ def _rebuild(metadata: ArtifactMetadata, directory: Path) -> BaselineModel:
 def _spec_from_metadata(metadata: ArtifactMetadata) -> ModelSpec:
     """Rebuild the architecture settings recorded for a model.
 
-    Only the CNN's architecture has to be reconstructed exactly, because its
-    layer shapes are baked into the state dict. For the tabular models the spec
-    is not needed to *load* weights, so a default is sufficient.
+    Only the torch families' architecture has to be reconstructed exactly, because
+    their layer shapes are baked into the state dict; that exact reconstruction
+    happens in :func:`_rebuild_torch` from ``state.json``. This function supplies a
+    valid placeholder spec so that the tabular path has something to hand the
+    estimator constructor. Every field is left at its default, so no field added
+    to :class:`ModelSpec` can break this by being absent from an old artefact.
 
     Args:
         metadata: The artefact's provenance.
@@ -576,10 +590,7 @@ def _spec_from_metadata(metadata: ArtifactMetadata) -> ModelSpec:
     Returns:
         A :class:`~voxshield.training.config.ModelSpec`.
     """
-    return ModelSpec(
-        family=metadata.family,
-        hidden_channels=(32, 64),
-    )
+    return ModelSpec(family=metadata.family)
 
 
 def _rebuild_sklearn(spec: ModelSpec, family: str, directory: Path) -> BaselineModel:
@@ -632,16 +643,23 @@ def _rebuild_sklearn(spec: ModelSpec, family: str, directory: Path) -> BaselineM
     return model
 
 
-def _rebuild_cnn(spec: ModelSpec, metadata: ArtifactMetadata, directory: Path) -> BaselineModel:
-    """Restore the CNN from its state dict and recorded architecture.
+def _rebuild_torch(spec: ModelSpec, metadata: ArtifactMetadata, directory: Path) -> BaselineModel:
+    """Restore a torch-family model from its state dict and recorded architecture.
+
+    Every architecture field is read with ``.get`` and a default matching the
+    value that predates the field, so an artefact written by an earlier build -- a
+    ``logmel_cnn`` with only ``hidden_channels`` and ``dropout`` in its
+    ``state.json`` -- still loads. A missing key means "the field did not exist",
+    which is unambiguous because every one of these fields was given its default
+    at the time it was introduced.
 
     Args:
-        spec: Architecture settings.
+        spec: Placeholder architecture settings, unused beyond the family.
         metadata: The artefact's provenance.
         directory: The artefact directory.
 
     Returns:
-        A fitted CNN.
+        A fitted model of the family named in the metadata.
 
     Raises:
         TrainingError: If torch, the state dict, or the architecture is missing.
@@ -650,10 +668,18 @@ def _rebuild_cnn(spec: ModelSpec, metadata: ArtifactMetadata, directory: Path) -
     weights_path = directory / WEIGHTS_NAME
     if not state_path.is_file() or not weights_path.is_file():
         msg = (
-            f"{directory} is missing {STATE_NAME} or {WEIGHTS_NAME}; the CNN weights are incomplete"
+            f"{directory} is missing {STATE_NAME} or {WEIGHTS_NAME}; "
+            f"the {metadata.family} weights are incomplete"
         )
         raise TrainingError(msg)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        msg = f"{state_path} is unreadable: {exc}"
+        raise TrainingError(msg) from exc
+    if not isinstance(state, dict):
+        msg = f"{state_path} must hold a mapping of architecture settings"
+        raise TrainingError(msg)
     n_frames = state.get("n_frames") or metadata.n_frames
     n_bands = state.get("n_bands") or metadata.n_bands
     if not n_frames or not n_bands:
@@ -662,14 +688,20 @@ def _rebuild_cnn(spec: ModelSpec, metadata: ArtifactMetadata, directory: Path) -
 
     import torch
 
-    from voxshield.training.models import LogMelCNN
+    from voxshield.training.models import build_baseline
 
     spec = ModelSpec(
-        family="logmel_cnn",
+        family=metadata.family,
         hidden_channels=tuple(state.get("hidden_channels", (32, 64))),
         dropout=float(state.get("dropout", 0.2)),
+        se_reduction=int(state.get("se_reduction", 8)),
+        rnn_hidden=int(state.get("rnn_hidden", 32)),
     )
-    model = LogMelCNN(spec, n_frames=int(n_frames), n_bands=int(n_bands))
+    # Rebuild through the same factory the runner uses, rather than importing one
+    # wrapper class here. The factory is the single place that maps a family name
+    # to an implementation, so a new torch family is loadable the moment it is
+    # trainable -- and a mismatch between the two cannot exist to be found later.
+    model = build_baseline(spec, n_frames=int(n_frames), n_bands=int(n_bands))
     network = model._build_network()
     network.load_state_dict(torch.load(weights_path, weights_only=True))
     network.eval()

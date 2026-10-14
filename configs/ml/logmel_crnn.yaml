@@ -1,0 +1,113 @@
+# Phase 4 advanced detector: a convolutional-recurrent network over log-mel frames.
+#
+# What this model adds over the Phase 3 logmel_cnn, and why each addition is here:
+#
+#   * squeeze-excitation reweights channels before pooling, so a channel that
+#     fires on silence counts for less than one that fires on vocoder artefacts;
+#   * a bidirectional GRU reads the frequency-collapsed frame sequence in both
+#     directions, so where a cue sits in time is modelled rather than averaged;
+#   * attention pooling weights the time steps by learned importance instead of
+#     uniformly, which keeps a locally-concentrated artefact from being diluted
+#     by the frames that carry nothing;
+#   * spec-augment masks frequency and time bands during training only, which is
+#     the standard regulariser for a corpus of a few thousand clips.
+#
+# The architecture is deliberately small -- tens of thousands of parameters, not
+# millions -- because it has to train on CPU within a modest epoch budget. A
+# larger model would not be trainable inside that constraint, and reporting the
+# resulting number would be reporting a hardware limit as a modelling result.
+#
+# Run with:
+#   voxshield ml train --config configs/ml/logmel_crnn.yaml
+#
+# This family needs PyTorch; the two tabular baselines do not.
+
+model_id: logmel_crnn
+
+features:
+  # Log-mel rather than MFCC, for the same reason logmel_cnn uses it: the DCT
+  # discards the frequency detail a convolutional front end exists to exploit.
+  kind: log_mel
+  n_fft: 400
+  hop_length: 160
+  n_mels: 80
+  fmin: 20.0
+  fmax: 7600.0
+  htk: true
+  # Unused for log_mel, but kept valid rather than set to a sentinel.
+  n_coefficients: 20
+  lifter: 0.0
+  with_delta: false
+  # Fixed frame count: the frequency-collapse leaves a sequence whose length
+  # depends on the frame count, and the padding must be the same for every clip.
+  # 300 frames is 3.0 seconds at a 10 ms hop.
+  n_frames: 300
+  target_frames: 300
+
+model:
+  family: logmel_crnn
+  # 16 then 32 keeps the convolutional stack cheap; the frequency collapse turns
+  # the last block's 32 channels into the input width of the recurrent layer.
+  hidden_channels: [16, 32]
+  dropout: 0.2
+  batch_size: 32
+  # Rare spoof classes otherwise get ignored by the loss, and the reported EER is
+  # then a statement about the majority class rather than about detection.
+  class_weight: balanced
+  # Squeeze-excitation bottleneck divisor. 0 would disable the block entirely.
+  se_reduction: 8
+  # Hidden size per direction of the bidirectional GRU. 0 would disable it,
+  # leaving a convolutional model with attention pooling.
+  rnn_hidden: 32
+  # Frequency and time masking during training only. Never applied at scoring.
+  spec_augment: true
+  freq_mask: 8
+  time_mask: 16
+  num_masks: 2
+  # A voice-cloning corpus's labels are themselves noisy: a "real" clip may carry
+  # light processing and a generated one may be near-perfect. A little target
+  # smoothing stops the model chasing that noise, and the loss reported here is
+  # the cross-entropy the checkpoint selection compares, not a probability.
+  label_smoothing: 0.05
+  # Clip the gradient norm so one bad batch cannot undo the run. 0 disables.
+  grad_clip: 1.0
+
+train:
+  seed: 20260928
+  # Modest, because the CPU budget is the binding constraint on this corpus and
+  # an epoch count that never finishes selects nothing. Patience stops it sooner.
+  epochs: 20
+  device: cpu
+  # Score dev every epoch and keep the best checkpoint, rather than taking the
+  # last epoch. Taking the last epoch is how a recurrent model reports its most
+  # overfit weights as though they were its best.
+  eval_every: 1
+  # Stop after this many epochs without a dev improvement. Lower than the CNN's,
+  # because the GRU overfits a small corpus faster than the plain convolutional
+  # stack does, so waiting longer mostly costs CPU time.
+  patience: 6
+  verify_leakage: true
+  min_train_samples: 100
+  min_dev_samples: 50
+
+threshold:
+  strategy: eer
+
+train_split: train
+dev_split: dev
+test_split: test
+
+output_dir: data/models
+
+notes:
+  - Dev checkpoint selection uses dev log loss; the EER threshold is chosen
+    separately, also on dev.
+  - Spec-augment is applied during training only; scoring runs with the layer in
+    evaluation mode, so the reported metrics describe the unmasked input.
+  - Frame count is fixed, so clip duration is part of the model's input
+    contract. Changing n_frames after training invalidates the saved weights.
+  - The recurrent layer sees the frequency-collapsed frame sequence, so the model
+    is sensitive to the hop length and n_mels that produced it. Changing either
+    invalidates the saved weights.
+  - Underpowered on small corpora; report it as a negative result if that is what
+    it is.

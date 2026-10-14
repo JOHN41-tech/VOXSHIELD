@@ -21,9 +21,16 @@ gets ``eval_set=(dev)`` for early stopping, and the CNN selects its best
 checkpoint by dev loss. Both are legitimate uses of a development split. The
 threshold is also chosen on dev. None of the three is allowed to see test.
 
-**Torch is imported lazily.** :class:`LogMelCNN` must be constructible in an
-environment without PyTorch only in the sense that asking for it raises a clear
-error; importing this module never requires Torch.
+**Torch is imported lazily.** :class:`LogMelCNN` and :class:`LogMelCRNN` must be
+constructible in an environment without PyTorch only in the sense that asking for
+one raises a clear error; importing this module never requires Torch.
+
+**Both torch families share one training loop.** :func:`_train_torch_classifier`
+holds the epoch loop, the class-weighted loss, the dev checkpointing, and the
+early stopping. The two wrappers differ in the network they build and the note
+they attach, and in nothing else. Copying the loop into the second wrapper would
+mean two places to fix a bug in checkpoint selection, and only one of them would
+get fixed.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ __all__ = [
     "BaselineModel",
     "FitSummary",
     "LogMelCNN",
+    "LogMelCRNN",
     "LogisticBaseline",
     "XGBoostBaseline",
     "build_baseline",
@@ -585,126 +593,25 @@ class LogMelCNN(BaselineModel):
                 the features are not finite.
         """
         self._check_labels(train)
-        if train.matrices is None:
-            msg = (
-                "logmel_cnn needs frame matrices; call load_feature_matrix with want_matrices=True"
-            )
-            raise TrainingError(msg)
-        _require_finite(train.matrices, split=train.split)
 
         torch = self._torch()
         self._network = self._build_network()
-        optimiser = torch.optim.AdamW(self._network.parameters(), lr=self.spec.learning_rate)
-        # Inverse-frequency weights, so a corpus with 20x more bona fide windows
-        # does not train the model to call everything bona fide.
-        counts = train.counts
-        total = float(sum(counts.values()))
-        weights = torch.tensor(
-            [total / (2.0 * max(counts[i], 1)) for i in range(2)], dtype=torch.float32
+        summary = _train_torch_classifier(
+            self._network,
+            train,
+            dev,
+            torch=torch,
+            spec=self.spec,
+            seed=self.seed,
+            epochs=self.epochs,
+            eval_every=self.eval_every,
+            patience=self.patience,
+            arch_note=(
+                "global average pooling over time, so a padded clip does not shift the score"
+            ),
         )
-        criterion = torch.nn.CrossEntropyLoss(weight=weights)
-
-        x_train = torch.from_numpy(np.asarray(train.matrices, dtype=np.float32))
-        y_train = torch.from_numpy(np.asarray(train.labels, dtype=np.int64))
-        x_dev = None
-        if dev is not None and dev.matrices is not None and len(dev) > 0:
-            _require_finite(dev.matrices, split=dev.split)
-            x_dev = torch.from_numpy(np.asarray(dev.matrices, dtype=np.float32))
-            y_dev = torch.from_numpy(np.asarray(dev.labels, dtype=np.int64))
-
-        generator = torch.Generator().manual_seed(self.seed)
-        loader = torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(x_train, y_train),
-            batch_size=self.spec.batch_size,
-            shuffle=True,
-            generator=generator,
-        )
-
-        best_loss = float("inf")
-        best_state: dict[str, Any] | None = None
-        best_epoch = 0
-        stale = 0
-        history: list[float] = []
-        evaluations = 0
-        ran = 0
-        for epoch in range(1, self.epochs + 1):
-            ran = epoch
-            self._network.train()
-            for batch_x, batch_y in loader:
-                optimiser.zero_grad()
-                loss = criterion(self._network(batch_x), batch_y)
-                loss.backward()
-                optimiser.step()
-
-            if x_dev is None or epoch % self.eval_every != 0:
-                continue
-
-            evaluations += 1
-            dev_loss = self._dev_loss(criterion, x_dev, y_dev)
-            history.append(dev_loss)
-            if dev_loss < best_loss - 1e-6:
-                best_loss = dev_loss
-                best_epoch = epoch
-                best_state = {k: v.detach().clone() for k, v in self._network.state_dict().items()}
-                stale = 0
-            else:
-                stale += 1
-                if self.patience and stale >= self.patience:
-                    break
-
-        if best_state is not None:
-            self._network.load_state_dict(best_state)
         self._fitted = True
-
-        notes = [
-            "global average pooling over time, so a padded clip does not shift the score",
-            "class-weighted cross entropy",
-        ]
-        if x_dev is None:
-            notes.append(
-                "no dev matrices supplied, so the final epoch was used rather than "
-                "a selected one; the epoch count is untuned"
-            )
-        if evaluations < ran and x_dev is not None:
-            notes.append(
-                f"dev was scored every {self.eval_every} epoch(s), so "
-                f"{ran - evaluations} epoch(s) went unevaluated"
-            )
-        if self.patience and stale >= self.patience:
-            notes.append(f"early stopped after {self.patience} evaluation(s) without improvement")
-        return FitSummary(
-            n_train=len(train),
-            n_dev=0 if dev is None else len(dev),
-            epochs_run=ran,
-            best_epoch=best_epoch if best_state is not None else None,
-            selection_metric="dev_logloss" if x_dev is not None else "none",
-            selection_value=best_loss if best_state is not None else None,
-            notes=tuple(notes),
-        )
-
-    def _dev_loss(self, criterion: Any, x_dev: Any, y_dev: Any) -> float:
-        """Mean weighted cross-entropy on the development split.
-
-        Args:
-            criterion: The training loss, which is class-weighted.
-            x_dev: Development matrices.
-            y_dev: Development labels.
-
-        Returns:
-            The row-weighted mean loss, comparable across epochs.
-        """
-        torch = self._torch()
-        self._network.eval()
-        batch = max(1, self.spec.batch_size)
-        total = 0.0
-        seen = 0
-        with torch.no_grad():
-            for start in range(0, int(x_dev.shape[0]), batch):
-                stop = min(start + batch, int(x_dev.shape[0]))
-                logits = self._network(x_dev[start:stop])
-                total += float(criterion(logits, y_dev[start:stop])) * (stop - start)
-                seen += stop - start
-        return total / max(1, seen)
+        return summary
 
     def predict_proba(self, data: FeatureMatrix) -> np.ndarray:
         """Score rows as synthetic probability.
@@ -730,13 +637,7 @@ class LogMelCNN(BaselineModel):
 
         torch = self._torch()
         self._network.eval()
-        x = torch.from_numpy(np.asarray(data.matrices, dtype=np.float32))
-        outputs: list[np.ndarray] = []
-        with torch.no_grad():
-            for start in range(0, x.shape[0], max(1, self.spec.batch_size)):
-                logits = self._network(x[start : start + self.spec.batch_size])
-                outputs.append(torch.softmax(logits, dim=1)[:, 1].numpy())
-        return np.concatenate(outputs).astype(np.float64)
+        return _score_torch_classifier(self._network, data, self.spec, torch)
 
     def describe(self) -> dict[str, Any]:
         """JSON-ready model description, including the parameter count."""
@@ -745,6 +646,395 @@ class LogMelCNN(BaselineModel):
         if self._network is not None:
             base["n_parameters"] = int(sum(p.numel() for p in self._network.parameters()))
         return base
+
+
+class LogMelCRNN(BaselineModel):
+    """A convolutional-recurrent network over log-mel frames.
+
+    The CNN baseline collapses the time axis with a flat average; this model
+    replaces that collapse with three mechanisms, each targeting a way the flat
+    average is wrong. Squeeze-excitation reweights channels before pooling, so a
+    channel that fires on silence does not count as much as one that fires on a
+    vocoder artefact. A bidirectional GRU reads the sequence of frequency-collapsed
+    frames in both directions, so a cue's position in time is modelled rather than
+    averaged away. Attention pooling then weights the time steps by learned
+    importance instead of uniformly.
+
+    The architecture is kept deliberately small. The parameter budget for this
+    family is tens of thousands, not millions, because it has to train on CPU in a
+    modest epoch budget on a corpus of a few thousand clips; a larger model would
+    not be trainable within that constraint and reporting it as a negative result
+    would be reporting a hardware limit as a modelling one.
+
+    Args:
+        spec: Architecture settings. ``se_reduction``, ``rnn_hidden``,
+            ``spec_augment``, ``label_smoothing`` and ``grad_clip`` are read here;
+            the rest are shared with the other families.
+        n_frames: Frames per clip, from the feature configuration.
+        n_bands: Mel bands per frame.
+        seed: Random seed, applied to every torch RNG this model touches.
+        epochs: Training epochs, from :class:`~voxshield.training.config.TrainSpec`.
+        eval_every: Score dev every N epochs.
+        patience: Stop after N evaluations without improvement. ``0`` disables.
+
+    Raises:
+        TrainingError: If PyTorch is unavailable, or the frame shape is unusable.
+    """
+
+    requires_matrices = True
+
+    def __init__(
+        self,
+        spec: ModelSpec,
+        *,
+        n_frames: int,
+        n_bands: int,
+        seed: int = 0,
+        epochs: int = 12,
+        eval_every: int = 1,
+        patience: int = 0,
+    ) -> None:
+        super().__init__(spec)
+        if n_frames < 1 or n_bands < 1:
+            msg = f"CRNN needs a positive frame shape, got ({n_frames}, {n_bands})"
+            raise TrainingError(msg)
+        self.n_frames = int(n_frames)
+        self.n_bands = int(n_bands)
+        self.seed = int(seed)
+        self.epochs = int(epochs)
+        self.eval_every = max(1, int(eval_every))
+        self.patience = int(patience)
+        self._network: Any = None
+
+    @staticmethod
+    def _torch() -> Any:
+        """Import torch on demand.
+
+        Returns:
+            The ``torch`` module.
+
+        Raises:
+            TrainingError: If PyTorch is not installed.
+        """
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover - environment problem
+            raise TrainingError(_MISSING_TORCH) from exc
+        return torch
+
+    def _build_network(self) -> Any:
+        """Construct the torch module.
+
+        Returns:
+            A :class:`~voxshield.training._crnn.LogMelCRNNNet`.
+
+        Raises:
+            TrainingError: If PyTorch is unavailable.
+        """
+        try:
+            from voxshield.training._crnn import LogMelCRNNNet, seed_everything
+        except ImportError as exc:
+            raise TrainingError(_MISSING_TORCH) from exc
+        seed_everything(self.seed)
+        return LogMelCRNNNet(
+            self.n_bands,
+            self.spec.hidden_channels or (16, 32),
+            self.spec.dropout,
+            se_reduction=self.spec.se_reduction,
+            rnn_hidden=self.spec.rnn_hidden,
+            spec_augment=self.spec.spec_augment,
+            freq_mask=self.spec.freq_mask,
+            time_mask=self.spec.time_mask,
+            num_masks=self.spec.num_masks,
+        )
+
+    def fit(self, train: FeatureMatrix, *, dev: FeatureMatrix | None = None) -> FitSummary:
+        """Train with dev-based checkpoint selection.
+
+        Args:
+            train: Training data. Frame matrices are required.
+            dev: Development data, used to pick the best epoch and to score.
+
+        Returns:
+            A :class:`FitSummary` naming the selected epoch and its dev loss.
+
+        Raises:
+            TrainingError: If frame matrices are absent, a class is missing, or
+                the features are not finite.
+        """
+        self._check_labels(train)
+
+        torch = self._torch()
+        self._network = self._build_network()
+        note = "attention pooling over time, with channel squeeze-excitation"
+        if self.spec.rnn_hidden > 0:
+            note = f"bidirectional GRU ({self.spec.rnn_hidden}/direction) over " + note
+        if self.spec.spec_augment:
+            note += "; frequency and time masking during training only"
+        summary = _train_torch_classifier(
+            self._network,
+            train,
+            dev,
+            torch=torch,
+            spec=self.spec,
+            seed=self.seed,
+            epochs=self.epochs,
+            eval_every=self.eval_every,
+            patience=self.patience,
+            arch_note=note,
+        )
+        self._fitted = True
+        return summary
+
+    def predict_proba(self, data: FeatureMatrix) -> np.ndarray:
+        """Score rows as synthetic probability.
+
+        Args:
+            data: Features with frame matrices.
+
+        Returns:
+            Float64 array of shape ``(n,)``, softmax column 1 (spoof).
+
+        Raises:
+            TrainingError: If unfitted, matrices are absent, or the features are
+                not finite.
+        """
+        self._require_fitted()
+        if data.matrices is None:
+            msg = (
+                "logmel_crnn scoring needs frame matrices; call "
+                "load_feature_matrix with want_matrices=True"
+            )
+            raise TrainingError(msg)
+        _require_finite(data.matrices, split=data.split)
+
+        torch = self._torch()
+        self._network.eval()
+        return _score_torch_classifier(self._network, data, self.spec, torch)
+
+    def describe(self) -> dict[str, Any]:
+        """JSON-ready model description, including the parameter count."""
+        base = super().describe()
+        base.update(
+            {
+                "n_frames": self.n_frames,
+                "n_bands": self.n_bands,
+                "se_reduction": self.spec.se_reduction,
+                "rnn_hidden": self.spec.rnn_hidden,
+                "spec_augment": self.spec.spec_augment,
+            }
+        )
+        if self._network is not None:
+            base["n_parameters"] = int(sum(p.numel() for p in self._network.parameters()))
+        return base
+
+
+def _train_torch_classifier(
+    network: Any,
+    train: FeatureMatrix,
+    dev: FeatureMatrix | None,
+    *,
+    torch: Any,
+    spec: ModelSpec,
+    seed: int,
+    epochs: int,
+    eval_every: int,
+    patience: int,
+    arch_note: str,
+    parameter_names: str = "matrices",
+) -> FitSummary:
+    """Epoch loop for a torch classifier, shared by every torch family.
+
+    Extracted from :meth:`LogMelCNN.fit` so that the CNN and the CRNN train
+    identically rather than similarly. Everything that decides the reported
+    result lives here: the class-weighted loss, dev checkpointing, and the
+    early-stopping rule. A second copy of this loop is a second place for those to
+    drift apart.
+
+    The network is mutated in place: the best checkpoint is loaded back into it
+    before returning. The caller owns the network and any state it needs after
+    fitting.
+
+    Args:
+        network: The torch module to fit.
+        train: Training data. Frame matrices are required.
+        dev: Development data for checkpoint selection, or ``None``.
+        torch: The imported ``torch`` module, supplied by the caller so this
+            function does not itself depend on it being importable.
+        spec: Architecture settings, for the learning rate and batch size.
+        seed: RNG seed for the shuffling generator. The caller is responsible for
+            having seeded torch's global RNG before building the network.
+        epochs: Maximum epochs to run.
+        eval_every: Score dev every N epochs.
+        patience: Stop after N evaluations without improvement. ``0`` disables.
+        arch_note: One sentence describing the architecture. It is the first fit
+            note, so a reader of the artefact learns what the model is before
+            learning what it did.
+        parameter_names: What train.matrices holds, for error messages.
+
+    Returns:
+        A :class:`FitSummary` naming the selected epoch and its dev loss.
+
+    Raises:
+        TrainingError: If frame matrices are absent, a class is missing, or the
+            features are not finite.
+    """
+    if train.matrices is None:
+        msg = (
+            f"this model needs frame {parameter_names}; call "
+            "load_feature_matrix with want_matrices=True"
+        )
+        raise TrainingError(msg)
+    _require_finite(train.matrices, split=train.split)
+
+    optimiser = torch.optim.AdamW(network.parameters(), lr=spec.learning_rate)
+    # Inverse-frequency weights, so a corpus with 20x more bona fide windows does
+    # not train the model to call everything bona fide.
+    counts = train.counts
+    total = float(sum(counts.values()))
+    weights = torch.tensor(
+        [total / (2.0 * max(counts[i], 1)) for i in range(2)], dtype=torch.float32
+    )
+    criterion = torch.nn.CrossEntropyLoss(
+        weight=weights, label_smoothing=float(spec.label_smoothing)
+    )
+
+    x_train = torch.from_numpy(np.asarray(train.matrices, dtype=np.float32))
+    y_train = torch.from_numpy(np.asarray(train.labels, dtype=np.int64))
+    x_dev = None
+    y_dev = None
+    if dev is not None and dev.matrices is not None and len(dev) > 0:
+        _require_finite(dev.matrices, split=dev.split)
+        x_dev = torch.from_numpy(np.asarray(dev.matrices, dtype=np.float32))
+        y_dev = torch.from_numpy(np.asarray(dev.labels, dtype=np.int64))
+
+    generator = torch.Generator().manual_seed(seed)
+    loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x_train, y_train),
+        batch_size=spec.batch_size,
+        shuffle=True,
+        generator=generator,
+    )
+
+    best_loss = float("inf")
+    best_state: dict[str, Any] | None = None
+    best_epoch = 0
+    stale = 0
+    evaluations = 0
+    ran = 0
+    for epoch in range(1, epochs + 1):
+        ran = epoch
+        network.train()
+        for batch_x, batch_y in loader:
+            optimiser.zero_grad()
+            loss = criterion(network(batch_x), batch_y)
+            loss.backward()
+            if spec.grad_clip > 0.0:
+                torch.nn.utils.clip_grad_norm_(network.parameters(), float(spec.grad_clip))
+            optimiser.step()
+
+        if x_dev is None or epoch % eval_every != 0:
+            continue
+
+        evaluations += 1
+        dev_loss = _torch_dev_loss(network, criterion, x_dev, y_dev, spec, torch)
+        if dev_loss < best_loss - 1e-6:
+            best_loss = dev_loss
+            best_epoch = epoch
+            best_state = {k: v.detach().clone() for k, v in network.state_dict().items()}
+            stale = 0
+        else:
+            stale += 1
+            if patience and stale >= patience:
+                break
+
+    if best_state is not None:
+        network.load_state_dict(best_state)
+
+    notes = [arch_note, "class-weighted cross entropy"]
+    if spec.label_smoothing > 0.0:
+        notes.append(f"label smoothing {spec.label_smoothing}")
+    if spec.grad_clip > 0.0:
+        notes.append(f"gradient norm clipped at {spec.grad_clip}")
+    if x_dev is None:
+        notes.append(
+            "no dev matrices supplied, so the final epoch was used rather than "
+            "a selected one; the epoch count is untuned"
+        )
+    if evaluations < ran and x_dev is not None:
+        notes.append(
+            f"dev was scored every {eval_every} epoch(s), so "
+            f"{ran - evaluations} epoch(s) went unevaluated"
+        )
+    if patience and stale >= patience:
+        notes.append(f"early stopped after {patience} evaluation(s) without improvement")
+    return FitSummary(
+        n_train=len(train),
+        n_dev=0 if dev is None else len(dev),
+        epochs_run=ran,
+        best_epoch=best_epoch if best_state is not None else None,
+        selection_metric="dev_logloss" if x_dev is not None else "none",
+        selection_value=best_loss if best_state is not None else None,
+        notes=tuple(notes),
+    )
+
+
+def _torch_dev_loss(
+    network: Any,
+    criterion: Any,
+    x_dev: Any,
+    y_dev: Any,
+    spec: ModelSpec,
+    torch: Any,
+) -> float:
+    """Mean weighted cross-entropy on the development split.
+
+    Args:
+        network: The module being trained.
+        criterion: The training loss, which is class-weighted.
+        x_dev: Development matrices.
+        y_dev: Development labels.
+        spec: Architecture settings, for the batch size.
+        torch: The imported ``torch`` module.
+
+    Returns:
+        The row-weighted mean loss, comparable across epochs.
+    """
+    network.eval()
+    batch = max(1, spec.batch_size)
+    total = 0.0
+    seen = 0
+    with torch.no_grad():
+        for start in range(0, int(x_dev.shape[0]), batch):
+            stop = min(start + batch, int(x_dev.shape[0]))
+            logits = network(x_dev[start:stop])
+            total += float(criterion(logits, y_dev[start:stop])) * (stop - start)
+            seen += stop - start
+    return total / max(1, seen)
+
+
+def _score_torch_classifier(
+    network: Any, data: FeatureMatrix, spec: ModelSpec, torch: Any
+) -> np.ndarray:
+    """Score rows as the softmax probability of the spoof class.
+
+    Args:
+        network: A fitted module, already moved to eval mode by the caller.
+        data: Features with frame matrices.
+        spec: Architecture settings, for the batch size.
+        torch: The imported ``torch`` module.
+
+    Returns:
+        Float64 array of shape ``(n,)``.
+    """
+    x = torch.from_numpy(np.asarray(data.matrices, dtype=np.float32))
+    outputs: list[np.ndarray] = []
+    batch = max(1, spec.batch_size)
+    with torch.no_grad():
+        for start in range(0, x.shape[0], batch):
+            logits = network(x[start : start + batch])
+            outputs.append(torch.softmax(logits, dim=1)[:, 1].numpy())
+    return np.concatenate(outputs).astype(np.float64)
 
 
 def _require_finite(array: np.ndarray, *, split: str) -> None:
@@ -807,14 +1097,15 @@ def build_baseline(
         return LogisticBaseline(spec)
     if spec.family == "mfcc_xgboost":
         return XGBoostBaseline(spec, early_stopping_rounds=early_stopping_rounds)
-    if spec.family == "logmel_cnn":
+    if spec.family in {"logmel_cnn", "logmel_crnn"}:
         if n_frames is None or n_bands is None:
             msg = (
-                "logmel_cnn requires n_frames and n_bands from the feature "
+                f"{spec.family} requires n_frames and n_bands from the feature "
                 "configuration; pass them from the front end's describe()"
             )
             raise TrainingError(msg)
-        return LogMelCNN(
+        wrapper = LogMelCNN if spec.family == "logmel_cnn" else LogMelCRNN
+        return wrapper(
             spec,
             n_frames=n_frames,
             n_bands=n_bands,
@@ -823,5 +1114,8 @@ def build_baseline(
             eval_every=eval_every,
             patience=patience,
         )
-    msg = f"unknown model family {spec.family!r}; known: mfcc_logreg, mfcc_xgboost, logmel_cnn"
+    msg = (
+        f"unknown model family {spec.family!r}; known: "
+        "mfcc_logreg, mfcc_xgboost, logmel_cnn, logmel_crnn"
+    )
     raise TrainingError(msg)

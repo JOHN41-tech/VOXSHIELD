@@ -95,6 +95,45 @@ datasets:
     path: raw/wavefake
     adapter: wavefake
 
+  # A small, present, openly-published spoofing corpus for Phase 4 development.
+  # It is *not* WaveFake: its directory names (real/, fake/) are simply inside
+  # WaveFake's adapter vocabulary, which is why the same adapter reads it without
+  # change. Kept as its own entry so a build names the bytes it actually used.
+  - dataset_id: deepfake_audio_detection
+    name: Deepfake Audio Detection (Hugging Face)
+    source: https://huggingface.co/datasets/garystafford/deepfake-audio-detection
+    version: "main@2025-12-28"
+    license: CC BY 4.0
+    # The card says CC BY 4.0, but that is the dataset publisher's assertion about
+    # YouTube-sourced speech. It says nothing verified about the rights in the
+    # underlying audio or the speakers' consent, so no permission is claimed and
+    # the entry is not auto-admissible under require_verified. A training build
+    # needs the allow_unverified override, which is recorded in the build.
+    license_status: REQUIRES_VERIFICATION
+    license_note: >-
+      Card asserts CC BY 4.0. Real clips are extracted from YouTube, so speaker
+      consent and the rights in the source audio were not independently verified
+      here. Requires license_policy=allow_unverified to build.
+    provenance: >-
+      Retrieved 2026-10-06 from the Hugging Face Hub: 933 FLAC under real/ and
+      933 FLAC under fake/. Real stems are yt_<id>_part_<n> (YouTube); fake stems
+      are <platform>_<id>_... for six TTS systems (el, hg, hu, lv, po, sp). The
+      two sides share no stems, so pairing finds no genuine/synthetic twins.
+    task: spoof_detection
+    enabled: true
+    path: raw/wavefake
+    adapter: wavefake
+    metadata:
+      # A source-disjointness key, not literally a speaker: the prefix groups all
+      # chunks of one source video (yt_0000...) or one TTS id (el_0001...) into a
+      # single partition_key, so the splitter keeps a whole source on one side.
+      # generator_id stays unknown (files sit directly under fake/), so no
+      # cross-generator claim is made.
+      speaker_pattern: "^(?P<speaker>[a-z]{2}_?[0-9]+)"
+    notes: >-
+      Source-disjoint by construction via speaker_pattern. 14 real source groups
+      and 96 synthetic source groups, enough for a stratified 70/15/15 split.
+
 paths:
   raw: raw
   interim: interim

@@ -53,7 +53,7 @@ from voxshield.training.artifacts import (
     save_artifact,
 )
 from voxshield.training.calibration import Calibrator, calibrator_from_dict, fit_calibrator
-from voxshield.training.config import TrainingConfig, TrainingError
+from voxshield.training.config import MATRIX_FAMILIES, TrainingConfig, TrainingError
 from voxshield.training.datasets import (
     FeatureMatrix,
     load_feature_matrix,
@@ -432,7 +432,9 @@ def run_baseline(
             )
 
     extractor = FeatureExtractor(config.features)
-    want_matrices = config.model.family == "logmel_cnn"
+    # Ask the spec which input shape its family consumes, rather than comparing the
+    # family name against the one model that happened to need matrices first.
+    want_matrices = config.model.uses_matrices
 
     def materialise(split: str, rows: tuple[Any, ...]) -> FeatureMatrix:
         return load_feature_matrix(
@@ -811,7 +813,7 @@ def run_from_artifact(
             extractor,
             root=root,
             split=split,
-            want_matrices=metadata.family == "logmel_cnn",
+            want_matrices=metadata.family in MATRIX_FAMILIES,
             strict=False,
         )
         if not len(matrix.labels):

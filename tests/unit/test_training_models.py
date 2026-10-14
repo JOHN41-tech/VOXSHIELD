@@ -24,8 +24,9 @@ from voxshield.training.datasets import FeatureMatrix
 from voxshield.training.models import (
     BaselineModel,
     FitSummary,
-    LogisticBaseline,
     LogMelCNN,
+    LogMelCRNN,
+    LogisticBaseline,
     XGBoostBaseline,
     build_baseline,
 )
@@ -110,6 +111,34 @@ class TestConstruction:
         model = build_baseline(ModelSpec(family="logmel_cnn"), n_frames=N_FRAMES, n_bands=N_BANDS)
         assert model.requires_matrices is True
 
+    def test_crnn_requires_frame_shape(self) -> None:
+        with pytest.raises(TrainingError, match=r"n_frames and n_bands"):
+            build_baseline(ModelSpec(family="logmel_crnn"))
+
+    def test_crnn_declares_matrix_requirement(self) -> None:
+        model = build_baseline(ModelSpec(family="logmel_crnn"), n_frames=N_FRAMES, n_bands=N_BANDS)
+        assert model.requires_matrices is True
+
+    @pytest.mark.parametrize(
+        ("se_reduction", "rnn_hidden"),
+        [(0, 32), (8, 0), (0, 0)],
+    )
+    def test_crnn_builds_with_optional_blocks_disabled(
+        self, se_reduction: int, rnn_hidden: int
+    ) -> None:
+        # The optional blocks are features of the model, not of the contract: a
+        # configuration that turns either off must still produce a building,
+        # forwarding network rather than an error discovered on the first batch.
+        import torch
+
+        model = LogMelCRNN(
+            ModelSpec(family="logmel_crnn", se_reduction=se_reduction, rnn_hidden=rnn_hidden),
+            n_frames=N_FRAMES,
+            n_bands=N_BANDS,
+        )
+        network = model._build_network()
+        assert tuple(network(torch.zeros(2, N_FRAMES, N_BANDS)).shape) == (2, 2)
+
     def test_importing_the_module_does_not_import_torch(self) -> None:
         # The tabular baselines must remain usable without PyTorch, so this
         # module may not drag torch in at import time.
@@ -178,6 +207,118 @@ class TestGuards:
         with pytest.raises(TrainingError, match=r"non-finite"):
             model.fit(train)
 
+    def test_crnn_refuses_pooled_vectors(self) -> None:
+        train = make_matrix("train", 32, matrices=False)
+        model = build_baseline(ModelSpec(family="logmel_crnn"), n_frames=N_FRAMES, n_bands=N_BANDS)
+        with pytest.raises(TrainingError, match=r"frame matrices"):
+            model.fit(train)
+
+    def test_crnn_refuses_non_finite_matrices(self) -> None:
+        train = make_matrix("train", 32)
+        assert train.matrices is not None
+        train.matrices[1, 1, 1] = np.nan
+        model = build_baseline(ModelSpec(family="logmel_crnn"), n_frames=N_FRAMES, n_bands=N_BANDS)
+        with pytest.raises(TrainingError, match=r"non-finite"):
+            model.fit(train)
+
+    @pytest.mark.parametrize("shape", [(0, 12), (24, 0), (24, -1)])
+    def test_crnn_rejects_degenerate_frame_shape(self, shape: tuple[int, int]) -> None:
+        with pytest.raises(TrainingError, match=r"positive frame shape"):
+            LogMelCRNN(ModelSpec(family="logmel_crnn"), n_frames=shape[0], n_bands=shape[1])
+
+
+class TestLogMelCRNN:
+    """The advanced family's contract, tested separately from the CNN's.
+
+    The CNN tests parametrise over family names for models that share an
+    interface; these are the CRNN-specific failure modes -- the shape of the
+    optional blocks, the augmentation that must not run at score time, and the
+    selection semantics the wrapper inherits -- and they are clearer spelled out
+    than threaded through a parametrise list.
+    """
+
+    def _model(self, **overrides: Any) -> LogMelCRNN:
+        spec = ModelSpec(family="logmel_crnn", batch_size=16, **overrides)
+        return LogMelCRNN(spec, n_frames=N_FRAMES, n_bands=N_BANDS, seed=0, epochs=2)
+
+    def test_returns_one_column_spoof_positive(self) -> None:
+        train, dev, test = train_dev_test()
+        model = self._model()
+        model.fit(train, dev=dev)
+        scores = model.predict_proba(test)
+        assert scores.shape == (len(test),), scores.shape
+        assert np.isfinite(scores).all()
+        assert 0.0 <= scores.min() and scores.max() <= 1.0
+
+    def test_separable_data_scores_spoof_higher(self) -> None:
+        train, dev, test = train_dev_test()
+        model = self._model()
+        model.fit(train, dev=dev)
+        scores = model.predict_proba(test)
+        assert float(scores[test.labels == 1].mean()) > float(scores[test.labels == 0].mean())
+
+    def test_scoring_is_deterministic(self) -> None:
+        # Spec-augment draws random masks, so this is really a test that the
+        # masks are confined to training: two score calls on one fitted model
+        # must agree exactly, and a mask applied at scoring would not.
+        train, dev, test = train_dev_test()
+        model = self._model(spec_augment=True)
+        model.fit(train, dev=dev)
+        np.testing.assert_allclose(model.predict_proba(test), model.predict_proba(test))
+
+    def test_selects_an_epoch_on_dev(self) -> None:
+        train, dev, _ = train_dev_test()
+        model = self._model()
+        summary = model.fit(train, dev=dev)
+        assert summary.selection_metric == "dev_logloss"
+        assert summary.best_epoch is not None
+        assert 1 <= summary.best_epoch <= 2
+        assert summary.epochs_run == 2
+
+    def test_without_dev_reports_no_selection(self) -> None:
+        train, _, _ = train_dev_test()
+        model = self._model()
+        summary = model.fit(train)
+        assert summary.selection_metric == "none"
+        assert summary.selection_value is None
+        assert any("untuned" in note for note in summary.notes)
+
+    def test_stops_early_on_patience(self) -> None:
+        train, dev, _ = train_dev_test(seed=5)
+        spec = ModelSpec(family="logmel_crnn", batch_size=16)
+        model = LogMelCRNN(
+            spec,
+            n_frames=N_FRAMES,
+            n_bands=N_BANDS,
+            seed=0,
+            epochs=50,
+            eval_every=1,
+            patience=1,
+        )
+        summary = model.fit(train, dev=dev)
+        assert summary.epochs_run < 50
+        assert any("early stopped" in note for note in summary.notes)
+
+    def test_describe_reports_parameter_count_and_optional_blocks(self) -> None:
+        train, dev, _ = train_dev_test()
+        model = self._model(se_reduction=8, rnn_hidden=32)
+        model.fit(train, dev=dev)
+        described = model.describe()
+        assert described["n_frames"] == N_FRAMES
+        assert described["n_bands"] == N_BANDS
+        assert described["se_reduction"] == 8
+        assert described["rnn_hidden"] == 32
+        assert 0 < described["n_parameters"] < 60_000
+
+    def test_disabling_blocks_shrinks_the_parameter_count(self) -> None:
+        # If the flags were accepted and ignored, the two counts would match and
+        # a configuration that asked to turn a block off would be a lie on disk.
+        full = self._model(se_reduction=8, rnn_hidden=32)._build_network()
+        lean = self._model(se_reduction=0, rnn_hidden=0)._build_network()
+        full_params = sum(p.numel() for p in full.parameters())
+        lean_params = sum(p.numel() for p in lean.parameters())
+        assert lean_params < full_params
+
 
 class TestProbabilityContract:
     @pytest.mark.parametrize("family", ["mfcc_logreg", "mfcc_xgboost", "logmel_cnn"])
@@ -235,7 +376,7 @@ class TestNoTestContact:
         # asserted directly.
         import inspect
 
-        for cls in (LogisticBaseline, XGBoostBaseline, LogMelCNN):
+        for cls in (LogisticBaseline, XGBoostBaseline, LogMelCNN, LogMelCRNN):
             params = set(inspect.signature(cls.fit).parameters)
             assert params == {"self", "train", "dev"}, (cls, params)
 

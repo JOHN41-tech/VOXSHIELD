@@ -38,7 +38,9 @@ CALIBRATION_METHODS: Final = ("platt", "isotonic", "none")
 
 __all__ = [
     "DEFAULT_ML_CONFIG_DIR",
+    "MATRIX_FAMILIES",
     "MODEL_FAMILIES",
+    "TORCH_FAMILIES",
     "FeatureSpec",
     "ModelSpec",
     "TrainSpec",
@@ -54,7 +56,22 @@ DEFAULT_ML_CONFIG_DIR: Final = Path("configs/ml")
 #: Model families this phase implements. A configuration naming anything else is
 #: rejected at load time rather than at fit time: discovering an unimplemented
 #: family after a 40-minute training run is a poor way to learn it.
-MODEL_FAMILIES: Final[frozenset[str]] = frozenset({"mfcc_logreg", "mfcc_xgboost", "logmel_cnn"})
+MODEL_FAMILIES: Final[frozenset[str]] = frozenset(
+    {"mfcc_logreg", "mfcc_xgboost", "logmel_cnn", "logmel_crnn"}
+)
+
+#: Families whose weights are a PyTorch state dict rather than a serialised
+#: scikit-learn object pair. Named as a set rather than tested by string equality
+#: in each caller: the runner, the artefact writer, and the artefact reader all
+#: have to answer "is this a torch family?", and three copies of ``== "logmel_cnn"``
+#: is how a fourth family gets added to two of the three.
+TORCH_FAMILIES: Final[frozenset[str]] = frozenset({"logmel_cnn", "logmel_crnn"})
+
+#: Families that consume frame matrices rather than pooled vectors. Kept as a
+#: separate name from :data:`TORCH_FAMILIES` because the two answer different
+#: questions. They coincide today; a future torch family over pooled vectors would
+#: be torch without being matrix-based, and would be added to one set only.
+MATRIX_FAMILIES: Final[frozenset[str]] = frozenset({"logmel_cnn", "logmel_crnn"})
 
 
 class TrainingError(Exception):
@@ -223,6 +240,27 @@ class ModelSpec:
             assembled rather than of the problem.
         max_scaler_samples: Cap on rows used to fit the scaler, so a large corpus
             does not make preprocessing the slowest step in the run.
+        se_reduction: Squeeze-excitation bottleneck divisor for the CRNN. ``0``
+            disables the block. Ignored by every other family.
+        rnn_hidden: Hidden size per direction of the CRNN's bidirectional GRU.
+            ``0`` disables the recurrent layer, leaving a convolutional model
+            with attention pooling. Ignored by every other family.
+        spec_augment: Apply frequency and time masking to the CRNN's input during
+            training. The masks are never applied at evaluation time regardless of
+            this flag; the flag only decides whether the layer exists at all.
+        freq_mask: Maximum width in mel bands of a spec-augment frequency mask.
+        time_mask: Maximum width in frames of a spec-augment time mask.
+        num_masks: Masks applied along each enabled axis, per sample, per batch.
+        label_smoothing: Target-smoothing for the torch cross-entropy loss. ``0``
+            uses hard targets. A small value is a regulariser on corpora whose
+            labels are themselves noisy, which voice-cloning corpora are.
+        grad_clip: Maximum gradient norm, below which gradients are left alone.
+            ``0`` disables clipping.
+
+    Attributes are all defaulted so that a configuration, or an artefact's
+    recorded spec, written before a field existed still loads. A missing key
+    taking the same value as the old hard-coded behaviour is what makes adding a
+    field a backwards-compatible change.
     """
 
     family: str = "mfcc_logreg"
@@ -237,6 +275,14 @@ class ModelSpec:
     batch_size: int = 32
     class_weight: str = "balanced"
     max_scaler_samples: int = 50_000
+    se_reduction: int = 8
+    rnn_hidden: int = 32
+    spec_augment: bool = False
+    freq_mask: int = 8
+    time_mask: int = 16
+    num_masks: int = 2
+    label_smoothing: float = 0.0
+    grad_clip: float = 0.0
 
     def __post_init__(self) -> None:
         """Reject an unsupported family or a nonsensical hyper-parameter."""
@@ -273,6 +319,21 @@ class ModelSpec:
         if self.class_weight not in {"balanced", "none"}:
             msg = f"class_weight must be 'balanced' or 'none', got {self.class_weight!r}"
             raise TrainingError(msg)
+        # The CRNN knobs are validated for every family rather than only for
+        # logmel_crnn. A configuration that sets depth for a tabular model is a
+        # mistake either way, and the check that catches it should not depend on
+        # the family the author happened to name.
+        for name in ("se_reduction", "rnn_hidden", "freq_mask", "time_mask", "num_masks"):
+            value = getattr(self, name)
+            if value < 0:
+                msg = f"{name} must be non-negative, got {value}"
+                raise TrainingError(msg)
+        if not 0.0 <= self.label_smoothing < 1.0:
+            msg = f"label_smoothing must lie in [0, 1), got {self.label_smoothing}"
+            raise TrainingError(msg)
+        if self.grad_clip < 0.0:
+            msg = f"grad_clip must be non-negative, got {self.grad_clip}"
+            raise TrainingError(msg)
 
     @property
     def sklearn_class_weight(self) -> str | None:
@@ -281,8 +342,38 @@ class ModelSpec:
 
     @property
     def uses_torch(self) -> bool:
-        """Whether this family requires PyTorch."""
-        return self.family == "logmel_cnn"
+        """Whether this family's weights are a PyTorch state dict."""
+        return self.family in TORCH_FAMILIES
+
+    @property
+    def uses_matrices(self) -> bool:
+        """Whether this family consumes frame matrices rather than pooled vectors.
+
+        The runner needs this before it featurises anything: a matrix family's
+        loader has to keep the time axis, and a pooled family's does not. Asking
+        the spec rather than comparing the family name keeps the answer in one
+        place when a family is added.
+        """
+        return self.family in MATRIX_FAMILIES
+
+    def architecture_params(self) -> dict[str, Any]:
+        """The subset of settings that determine the network's shape.
+
+        Recorded in ``state.json`` beside the weights, because a state dict is
+        meaningless without the layer sizes it was written against. Training knobs
+        are deliberately excluded: an artefact does not need the learning rate to
+        load, and recording it here would invite a reader to think changing it
+        changes the rebuild.
+
+        Returns:
+            A JSON-ready mapping of the shape-affecting fields.
+        """
+        return {
+            "hidden_channels": list(self.hidden_channels),
+            "dropout": self.dropout,
+            "se_reduction": self.se_reduction,
+            "rnn_hidden": self.rnn_hidden,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready mapping, with the channel tuple as a list."""
@@ -299,6 +390,14 @@ class ModelSpec:
             "batch_size": self.batch_size,
             "class_weight": self.class_weight,
             "max_scaler_samples": self.max_scaler_samples,
+            "se_reduction": self.se_reduction,
+            "rnn_hidden": self.rnn_hidden,
+            "spec_augment": self.spec_augment,
+            "freq_mask": self.freq_mask,
+            "time_mask": self.time_mask,
+            "num_masks": self.num_masks,
+            "label_smoothing": self.label_smoothing,
+            "grad_clip": self.grad_clip,
         }
 
     @classmethod
