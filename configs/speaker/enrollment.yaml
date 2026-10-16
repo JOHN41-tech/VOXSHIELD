@@ -1,0 +1,9 @@
+# Development defaults only; profiles are sensitive biometric information.
+profile_store: data/speaker-profiles
+profile_id_format: uuid
+store_raw_audio: false
+minimum_voiced_seconds: 2.0
+maximum_silence_ratio: 0.60
+maximum_clipping_ratio: 0.01
+reference_embedding_strategy: normalized_mean_of_unique_samples
+consent_required: true

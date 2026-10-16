@@ -1,0 +1,16 @@
+# This threshold is a plumbing/demo placeholder, NOT a calibrated operating point.
+# Evaluate on the target domain and choose a threshold using dev trials before use.
+threshold: 0.75
+threshold_version: development-uncalibrated-v1
+calibration_status: NOT_CALIBRATED
+score_method: cosine_similarity
+score_range: [-1.0, 1.0]
+higher_score_means_same_speaker: true
+quality_insufficient_decision: INCONCLUSIVE
+threshold_selection:
+  default_objective: eer
+  supported_objectives: [eer, target_far, target_frr]
+  target_far: 0.01
+  target_frr: 0.05
+  selection_split: dev
+  final_test_used_for_selection: false

@@ -1,0 +1,10 @@
+# SpeechBrain ECAPA-TDNN VoxCeleb pretrained encoder.
+# No weights are downloaded by VoxShield; point this to a pre-provisioned local folder.
+encoder_id: speechbrain-ecapa-voxceleb
+encoder_version: speechbrain/spkrec-ecapa-voxceleb
+model_directory: null
+model_license: Apache-2.0
+sample_rate_hz: 16000
+embedding_dimension: 192
+minimum_voiced_seconds: 2.0
+preprocessing_version: voxshield-audio-preprocess-v1

@@ -2,9 +2,9 @@
 
 **AI-powered, privacy-preserving detection and prevention of voice-cloning impersonation attacks on live and near-real-time calls.**
 
-> Status: **Phase 0 — pipeline complete, no model.** A working audio-analysis path ships in this repository. It accepts audio, measures it, and reports `UNSCORED` with `risk_band: "unknown"` because no detection model has been trained or loaded.
+> Status: **Phases 0–5 implementation work is present; this is not a production or calibrated system.** The repository includes shared audio handling, training/evaluation code, the Phase 4 synthetic-speech detector implementation, and the Phase 5 opt-in speaker-verification subsystem. Pretrained speaker weights and a consented speaker-labeled evaluation corpus are not bundled.
 >
-> **VoxShield cannot currently detect voice cloning.** The detection capability is Phase 1, gated on the evaluation protocol below. What Phase 0 does deliver is the whole path that carries an answer, plus the contract that keeps the system honest when it has none: no raw-audio retention, no blocked transactions, and no risk band without a model behind it.
+> **Do not interpret speaker matching as proof of identity or audio genuineness.** The development threshold is explicitly uncalibrated, real VoxShield speaker-verification metrics are unavailable without a suitable consented corpus, and Phase 4/5 are separate signals. No live-call interception, production deployment, or automatic transaction action is implemented.
 
 ---
 

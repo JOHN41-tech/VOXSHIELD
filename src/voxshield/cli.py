@@ -713,6 +713,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_data_parser(sub)
     _add_ml_parser(sub)
+    from voxshield.speaker.cli import add_parser as add_speaker_parser
+
+    add_speaker_parser(sub)
 
     return parser
 
