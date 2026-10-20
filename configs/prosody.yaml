@@ -1,0 +1,17 @@
+# Phase 6 engineering defaults. These are not calibrated risk thresholds.
+sample_rate_hz: 16000
+frame_ms: 40.0
+hop_ms: 10.0
+min_duration_seconds: 0.5
+min_voiced_seconds: 0.25
+min_valid_pitch_ratio: 0.10
+silence_dbfs: -45.0
+min_pause_seconds: 0.15
+pitch_min_hz: 50.0
+pitch_max_hz: 500.0
+max_clipping_ratio: 0.01
+minimum_baseline_samples: 3
+minimum_feature_observations: 3
+deviation_z_threshold: 3.0
+deviation_mad_threshold: 3.5
+storage_path: data/prosody_baselines
