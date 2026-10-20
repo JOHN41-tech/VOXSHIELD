@@ -106,9 +106,8 @@ def extract_prosodic_features(
     pitch = _pitch_track(frames, sample_rate, cfg)
     valid_pitch = np.isfinite(pitch) & speech_flags
     pitch_values = pitch[valid_pitch]
-    valid_pitch_ratio = float(
-        np.count_nonzero(valid_pitch) / max(1, np.count_nonzero(speech_flags))
-    )
+    speech_frame_count = max(1, int(np.count_nonzero(speech_flags)))
+    valid_pitch_ratio = float(np.count_nonzero(valid_pitch) / speech_frame_count)
     if pitch_values.size:
         add("pitch_median_hz", _metric(float(np.median(pitch_values)), "Hz"))
         add("pitch_mean_hz", _metric(float(np.mean(pitch_values)), "Hz"))

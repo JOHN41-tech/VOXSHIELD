@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,7 @@ class EvaluationReport:
         }
 
 
-def manifest_for_paths(paths: list[str | Path]) -> tuple[dict[str, str], ...]:
+def manifest_for_paths(paths: Sequence[str | Path]) -> tuple[dict[str, str], ...]:
     records: list[dict[str, str]] = []
     for path_value in sorted((Path(item) for item in paths), key=lambda item: str(item)):
         digest = hashlib.sha256(path_value.read_bytes()).hexdigest()

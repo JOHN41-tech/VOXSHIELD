@@ -111,7 +111,7 @@ def load_prosody_config(path: str | Path | None = None) -> ProsodyConfig:
     if not target.is_file():
         raise FileNotFoundError(target)
     try:
-        import yaml  # type: ignore[import-not-found]
+        import yaml
     except ImportError:
         return ProsodyConfig()
     loaded = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
